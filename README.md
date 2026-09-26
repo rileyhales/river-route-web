@@ -28,8 +28,8 @@ the cells of the routed catchments are read.
 ```bash
 npm install
 npm run dev        # the pages, with the test data at /data/, at the address vite prints, and /live.html
-npm run build      # the pages in dist/, to deploy, reading their data from the CDNs
-npm run preview    # serves dist/, as built, at the address vite prints
+npm run build      # the pages in dist/, to deploy at /webroute/, reading their data from the CDNs
+npm run preview    # serves dist/ at /webroute/ of the address vite prints, as it is deployed
 npm test           # starts its own server, routes the test data, and compares with river-route
 npm run benchmark  # times each stage in both orders, in one thread and with pools of workers, and each kernel alone
 ```
