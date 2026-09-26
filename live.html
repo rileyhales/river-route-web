@@ -119,22 +119,19 @@
     <form id="sources-form" class="modal-body">
       <div class="field">
         <label for="source-routing">Routing parameters</label>
-        <input id="source-routing" name="routingParameters" required spellcheck="false"
-               value="data/hydrography/region={region}/routing.parquet"/>
+        <input id="source-routing" name="routingParameters" required spellcheck="false" value="%VITE_ROUTING_PARAMETERS%"/>
       </div>
       <div class="field">
         <label for="source-weights">Grid weights</label>
-        <input id="source-weights" name="gridWeights" required spellcheck="false"
-               value="data/hydrography/region={region}/gridweights_ERA5_{region}.parquet"/>
+        <input id="source-weights" name="gridWeights" required spellcheck="false" value="%VITE_GRID_WEIGHTS%"/>
       </div>
       <div class="field">
         <label for="source-grid">Runoff grid</label>
-        <input id="source-grid" name="grid" required spellcheck="false" value="data/runoff/era5_1940.zarr/ro"/>
+        <input id="source-grid" name="grid" required spellcheck="false" value="%VITE_RUNOFF_GRID%"/>
       </div>
       <div class="field">
         <label for="source-streams">Streams</label>
-        <input id="source-streams" name="streams" required spellcheck="false"
-               value="data/hydrography/streams.pmtiles"/>
+        <input id="source-streams" name="streams" required spellcheck="false" value="%VITE_STREAMS%"/>
       </div>
     </form>
   </div>

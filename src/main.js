@@ -87,8 +87,12 @@ function readPeriod() {
   return { start: first, stop: last + SECONDS_PER_DAY }
 }
 
-/** What routeHydrograph takes to route ``reach`` over ``period``, with the data sources' templates filled in. */
+/**
+ * What routeHydrograph takes to route ``reach`` over ``period``, with the data sources' templates filled in: the runoff
+ * source names one zarr a year by {year}, and each year the period touches is read.
+ */
 function routingInputs({ riverId, region }, period, { routingParameters, gridWeights, runoff }) {
+  if (!runoff.includes('{year}')) throw new Error(`the runoff source ${runoff} must name each year's zarr by {year}`)
   const fill = (template, name, value) => absoluteUrl(template.replaceAll(`{${name}}`, value))
   const [firstYear, lastYear] = [period.start, period.stop - 1].map(time => new Date(time * 1000).getUTCFullYear())
   return {

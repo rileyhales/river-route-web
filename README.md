@@ -13,26 +13,33 @@ reset button in the panel's header clears the study area and its route, keeping 
 |--------------------|------------------------------------------------------------------------------------------------|
 | Routing parameters | parquet with `river_id`, `next_river_id`, `k`, `x`, every river before the one it drains into  |
 | Grid weights       | parquet with `river_id`, `x_index`, `y_index`, `area_sqm`, `proportion`, as in the netCDF      |
-| Runoff             | (time, y, x) zarr arrays of runoff depths, v2 or v3, a year each, like `.../era5_1940.zarr/ro` |
+| Runoff             | one (time, y, x) zarr array of runoff depths a year, v2 or v3, like `.../era5_1940.zarr/ro`    |
 | Streams            | PMTiles of the streams, with `riverId`, `riverIndex`, `upstreamCount`, and `TDXHydroRegion`    |
 
 The data sources dialog, the cog in the panel's header, names each input by a url, in which `{region}` stands for the
-study area's region and `{year}` for each year of the period. Each year's runoff array must go on from the step after
-the last year's ends, on the same grid. Its time coordinate is the array named by its first dimension, beside it in the
-store; its steps must be uniform, and its units attribute one river-route reads (m, mm, kg m-2), or absent for meters.
-Only the chunks holding the cells of the routed catchments are read.
+study area's region and `{year}` for each year of the period. Runoff is read one zarr a year, so its url must name
+`{year}`, and each year's array must hold only that year and go on from the step after the last year's ends, on the
+same grid. Its time coordinate is the array named by its first dimension, beside it in the store; its steps must be
+uniform, and its units attribute one river-route reads (m, mm, kg m-2), or absent for meters. Only the chunks holding
+the cells of the routed catchments are read.
 
 ## Running
 
 ```bash
 npm install
 npm run dev        # the pages, with the test data at /data/, at the address vite prints, and /live.html
+npm run build      # the pages in dist/, to deploy, reading their data from the CDNs
+npm run preview    # serves dist/, as built, at the address vite prints
 npm test           # starts its own server, routes the test data, and compares with river-route
 npm run benchmark  # times each stage in both orders, in one thread and with pools of workers, and each kernel alone
 ```
 
 Each of these first builds the routing kernel from C with `npm run wasm`, which needs Homebrew's `llvm@22` and `lld@22`
 (or `LLVM_BIN` and `LLD_BIN` naming other folders of clang and wasm-ld).
+
+The data sources each page starts with come from `.env`, which a build reads: each region's routing parameters and grid
+weights and the streams from the hydrography's CloudFront, and the runoff from `cdn.apps.geoglows.org`. The dev server
+reads `.env.development` instead, which names the `data/` it serves.
 
 The dev server serves `data/` at `/data/` as plain files, following links, which is how the inputs are read in place.
 `tests/prepare_test_data.py` fills it, run from this folder with the python environment of river-route beside it:

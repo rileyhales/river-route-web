@@ -1,9 +1,9 @@
 /**
  * Muskingum routing of gridded runoff to the hydrograph of one river, the simplest case of river-route: static
  * coefficients, the uniform runoff transform, one reach per river, a routing step equal to the runoff step, and every
- * river starting from no discharge. The routing parameters and grid weights are parquet files and the runoff is zarr
- * arrays, one after another in time, all read over HTTP. Only the chosen river and the rivers upstream of it are
- * routed, over the chosen period.
+ * river starting from no discharge. The routing parameters and grid weights are parquet files and the runoff a zarr
+ * array a year, all read over HTTP. Only the chosen river and the rivers upstream of it are routed, over the chosen
+ * period.
  */
 import { parquetMetadata, parquetRead, parquetSchema } from 'hyparquet'
 import { kernelModule, routeRivers, routeRiversByTimeStep } from './muskingum-wasm.js'

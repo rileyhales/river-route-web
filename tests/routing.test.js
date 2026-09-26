@@ -11,7 +11,7 @@ import * as javascript from '../src/muskingum.js'
 import { createLiveEngine } from '../src/live-engine.js'
 import * as wasm from '../src/muskingum-wasm.js'
 import { prepareRegion, prepareRouting, readRoutingParameters, routeHydrograph } from '../src/routing.js'
-import { openRunoff } from '../src/runoff.js'
+import { checkOneYear, openRunoff } from '../src/runoff.js'
 import { createWorkerPool } from '../src/worker-pool.js'
 
 const TOLERANCE = 10e-4 // as in river-route's tests: answers may differ by this share of the river's largest value
@@ -128,6 +128,13 @@ for (const name of expectedFiles) {
       const acrossAfter = sliceRows(across.runoffByCell, across.nSteps, 24, 48)
       assertSameRows(acrossBefore, 24, before.runoffByCell, before.nSteps, before.nSteps - 24)
       assertSameRows(acrossAfter, 24, after.runoffByCell, after.nSteps, 0)
+    })
+
+    test('reads runoff one zarr a year, refusing an array that holds more', async () => {
+      const { expected, inputs } = readExpected(name)
+      const twoYears = await openRunoff([...inputs.runoffUrls, new URL(expected.more_runoff[0], dataUrl).href])
+      const refused = /both holds runoff from \d+ to \d+; runoff is read one zarr a year$/
+      assert.throws(() => checkOneYear(twoYears.times, 'both'), refused) // the steps of one array of both years
     })
 
     test('names runoff arrays that do not go on from one another, and a period with no runoff', async () => {

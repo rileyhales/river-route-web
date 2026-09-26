@@ -1,7 +1,6 @@
 /**
- * Gridded runoff read from (time, y, x) zarr arrays over HTTP, one after another in time, such as a store per year: the
- * time steps of a period, and the series of the grid cells a river network needs over it, read chunk by chunk in this
- * thread or in a pool of workers.
+ * Gridded runoff read over HTTP from (time, y, x) zarr arrays, one a year: the time steps of a period, and the series
+ * of the grid cells a river network needs over it, read chunk by chunk in this thread or in a pool of workers.
  */
 import * as zarr from 'zarrita'
 
@@ -17,10 +16,10 @@ const METERS_PER_DEPTH_UNIT = new Map([['m', 1], ['meters', 1], ['kg m-2', 1], [
 const STEPS_COPIED_TOGETHER = 64 // a tile of every cell's steps copied at once keeps the chunk rows read in cache
 
 /**
- * Open the runoff arrays ``arrayUrls``, consecutive stretches of time on one grid, such as a store per year, and keep
- * the steps from ``period.start`` up to but not including ``period.stop``, in seconds since 1970, or every step when
- * there is no period. Each array must go on from the step after the one before ends, in the same step and units. The
- * runoff's ``array`` is its first array, whose grid and chunks across it every array shares.
+ * Open the runoff arrays ``arrayUrls``, one zarr a year of consecutive years on one grid, and keep the steps from
+ * ``period.start`` up to but not including ``period.stop``, in seconds since 1970, or every step when there is no
+ * period. Each array must hold one year and go on from the step after the one before ends, in the same step and units.
+ * The runoff's ``array`` is its first array, whose grid and chunks across it every array shares.
  */
 export async function openRunoff(arrayUrls, period) {
   if (!Array.isArray(arrayUrls) || arrayUrls.length === 0) throw new Error('the runoff needs at least one array url')
@@ -68,7 +67,7 @@ function checkContinues(before, next) {
   }
 }
 
-/** Open one runoff array and read its time steps, from the coordinate array named by its first dimension. */
+/** Open one year's runoff array and read its time steps, from the coordinate array named by its first dimension. */
 async function openRunoffArray(arrayUrl) {
   const url = arrayUrl.replace(/\/+$/, '')
   const array = await openZarrArray(url)
@@ -86,6 +85,7 @@ async function openRunoffArray(arrayUrl) {
     throw new Error(`${url} has ${array.shape[0]} time steps but its ${timeName} coordinate has ${times.length}`)
   }
   const [stepSeconds, metersPerUnit] = [uniformStepSeconds(times, url), metersPerDepthUnit(array, url)]
+  checkOneYear(times, url)
   return { url, array, times, stepSeconds, metersPerUnit }
 }
 
@@ -141,6 +141,14 @@ function epochSecondsFromCfTimes(values, { units, calendar }, url) {
   referenceTime.setUTCHours(hour, minute, second)
   const [epochSeconds, secondsPerUnit] = [referenceTime.getTime() / 1000, CF_SECONDS_PER_UNIT.get(unit)]
   return Float64Array.from(values, value => Math.round(epochSeconds + Number(value) * secondsPerUnit))
+}
+
+/** Refuse runoff ``times``, in seconds since 1970, that reach past one calendar year: runoff comes one zarr a year. */
+export function checkOneYear(times, url) {
+  const [firstYear, lastYear] = [times[0], times[times.length - 1]].map(time => new Date(time * 1000).getUTCFullYear())
+  if (firstYear !== lastYear) {
+    throw new Error(`${url} holds runoff from ${firstYear} to ${lastYear}; runoff is read one zarr a year`)
+  }
 }
 
 /** The one step between times, in whole seconds. Routing needs runoff at a constant step. */
