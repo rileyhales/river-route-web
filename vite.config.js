@@ -64,5 +64,9 @@ export default defineConfig({
   plugins: [serveDataDirectory()],
   server: { watch: { ignored: [isInDataDirectory] } },
   worker: { format: 'es' },
-  build: { chunkSizeWarningLimit: 1100 }, // kB: maplibre-gl alone is about 800 of the page's 1,064
+  build: {
+    chunkSizeWarningLimit: 1100, // kB: maplibre-gl alone is about 800 of the page's 1,064
+    // both pages: routing a period, and routing live the runoff painted onto the map
+    rolldownOptions: { input: ['index.html', 'live.html'].map(page => resolve(import.meta.dirname, page)) },
+  },
 })

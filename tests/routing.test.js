@@ -3,18 +3,22 @@
  * river-route routes from the same inputs, which tests/prepare_test_data.py records in data/expected/.
  */
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { after, before, describe, test } from 'node:test'
 import { Worker as NodeWorker } from 'node:worker_threads'
 import { createServer } from 'vite'
 import * as javascript from '../src/muskingum.js'
+import { createLiveEngine } from '../src/live-engine.js'
 import * as wasm from '../src/muskingum-wasm.js'
-import { prepareRouting, readRoutingParameters, routeHydrograph } from '../src/routing.js'
+import { prepareRegion, prepareRouting, readRoutingParameters, routeHydrograph } from '../src/routing.js'
+import { openRunoff } from '../src/runoff.js'
 import { createWorkerPool } from '../src/worker-pool.js'
 
 const TOLERANCE = 10e-4 // as in river-route's tests: answers may differ by this share of the river's largest value
 const JSRR_DIRECTORY = new URL('..', import.meta.url).pathname
 const EXPECTED_DIRECTORY = new URL('../data/expected/', import.meta.url)
+const HYDROGRAPHY_DIRECTORY = new URL('../data/hydrography/', import.meta.url)
+const STEP_SECONDS = 3600 // live routing's step, an hour
 const expectedFiles = readdirSync(EXPECTED_DIRECTORY).filter(name => name.endsWith('.json'))
 
 let server
@@ -148,6 +152,17 @@ for (const name of expectedFiles) {
       assert.equal(refused.headers.get('content-range'), `bytes */${size}`)
     })
   })
+}
+
+/** Fill a live stepper's forcing row with each river's runoff forcing at ``step``, summed from its weights' cells. */
+function forceLiveStep(live, { weightStart, weightCell, weightForcing }, runoffByCell, nSteps, step) {
+  for (let river = 0; river < weightStart.length - 1; river++) {
+    let forcing = 0
+    for (let weight = weightStart[river]; weight < weightStart[river + 1]; weight++) {
+      forcing += weightForcing[weight] * runoffByCell[weightCell[weight] * nSteps + step]
+    }
+    live.forcing[live.levelPositions[river]] = forcing
+  }
 }
 
 /** The steps from ``first`` up to ``stop`` of each row of a (row, step) array with rows of ``nSteps``. */
@@ -357,6 +372,41 @@ describe('kernels', () => {
     assert.throws(() => stepper.dischargeClasses({ ...classing, perTenfold: 0 }), refused)
   })
 
+  test('a live stepper, given each step its runoff forcing, routes what the time-step kernel does', async () => {
+    const { expected, inputs } = readExpected(name)
+    const riverId = Number(Object.keys(expected.hydrographs).find(river => Number(river) !== expected.outlet_river_id))
+    const { network, runoffByCell, nSteps } = await prepareRouting({ ...inputs, riverId })
+    const handed = new Map()
+    wasm.routeRiversByTimeStep(network, runoffByCell, nSteps, (step, discharge) => {
+      if (step === 99 || step === 999) handed.set(step, Float32Array.from(discharge))
+    })
+    const live = wasm.startLiveSteps(network)
+    for (let step = 0; step <= 999; step++) {
+      forceLiveStep(live, network, runoffByCell, nSteps, step)
+      live.route()
+      if (handed.has(step)) assertSameHydrograph(live.discharge(), handed.get(step))
+    }
+  })
+
+  test('a live stepper carries its discharge into another, which routes on exactly as the first would', async () => {
+    const { expected, inputs } = readExpected(name)
+    const riverId = Number(Object.keys(expected.hydrographs).find(river => Number(river) !== expected.outlet_river_id))
+    const { network, runoffByCell, nSteps } = await prepareRouting({ ...inputs, riverId })
+    const routeSteps = (live, first, stop) => {
+      for (let step = first; step < stop; step++) {
+        forceLiveStep(live, network, runoffByCell, nSteps, step)
+        live.route()
+      }
+      return Float32Array.from(live.discharge())
+    }
+    const unbroken = routeSteps(wasm.startLiveSteps(network), 0, 150)
+    const carried = routeSteps(wasm.startLiveSteps(network), 0, 100)
+    const carrier = wasm.startLiveSteps(network)
+    carrier.setDischarge(carried)
+    assert.deepEqual(routeSteps(carrier, 100, 150), unbroken)
+    assert.throws(() => carrier.setDischarge(carried.subarray(1)), /cannot set/)
+  })
+
   test('routing in windows of steps routes what routing every step at once does', async () => {
     const { inputs } = readExpected(name)
     const { network, runoffByCell, nSteps } = await prepareRouting(inputs)
@@ -399,5 +449,174 @@ describe('kernels', () => {
     assert.deepEqual(firstSteps, Array.from({ length: nWindows }, (_, window) => window * stepsPerWindow))
     assert.deepEqual(handedOutlet, Float64Array.from(series))
     assertSameHydrograph(lastWindowStep, lastStep) // every river at the last step, against the time-step kernel
+  })
+})
+
+describe('live', () => {
+  const [name] = expectedFiles
+
+  /** The tested region, as prepareRegion reads it, and its runoff grid's cells a row. */
+  async function readTestedRegion() {
+    const { inputs } = readExpected(name)
+    const region = await prepareRegion(inputs, STEP_SECONDS)
+    const nX = (await openRunoff(inputs.runoffUrls)).array.shape[2]
+    return { inputs, region, nX }
+  }
+
+  /** The keys of the cells of the region's first ``nWeights`` weights. */
+  function cellsOfWeights({ weightCellY, weightCellX }, nX, nWeights) {
+    return [...new Set(Array.from({ length: nWeights }, (_, weight) => weightCellY[weight] * nX + weightCellX[weight]))]
+  }
+
+  test('a live engine forces each river by the painted cells its catchment covers, until they are erased', async () => {
+    const { region, nX } = await readTestedRegion()
+    const cellKeys = cellsOfWeights(region, nX, 200)
+    const depth = 0.005 // meters a step
+    const engine = createLiveEngine(nX)
+    engine.addRegion('tested', region)
+    engine.setRunoff(cellKeys, depth)
+    engine.route(24)
+    const painted = Float32Array.from(engine.discharge())
+    engine.setRunoff(cellKeys, 0)
+    engine.route(24)
+    const erased = Float32Array.from(engine.discharge())
+    assert.equal(engine.sourceCells(), 0)
+    assert.equal(engine.stepsRouted(), 48)
+    // the same by hand: each weight whose cell is painted forcing its river with the depth
+    const live = wasm.startLiveSteps(region)
+    const paintedCells = new Set(cellKeys)
+    for (let step = 0; step < 48; step++) {
+      for (let weight = 0; weight < region.weightRiver.length && step < 24; weight++) {
+        if (!paintedCells.has(region.weightCellY[weight] * nX + region.weightCellX[weight])) continue
+        live.forcing[live.levelPositions[region.weightRiver[weight]]] += depth * region.weightForcing[weight]
+      }
+      live.route()
+      if (step === 23) assertSameHydrograph(painted, live.discharge())
+    }
+    assertSameHydrograph(erased, live.discharge())
+    assert.ok(painted.some(discharge => discharge > 0), 'the painted cells forced no river')
+  })
+
+  test('a live engine pulses the cells under the brush each step, and those it passed over once', async () => {
+    const { region, nX } = await readTestedRegion()
+    const cells = cellsOfWeights(region, nX, 400)
+    const [underBrush, passedOver] = [cells.slice(0, 4), cells.slice(4)]
+    const depth = 0.005 // meters a step
+    const engine = createLiveEngine(nX)
+    engine.addRegion('tested', region)
+    engine.pulse(underBrush, passedOver, depth)
+    engine.route(3)
+    engine.pulse([], [], depth) // let go
+    engine.route(2)
+    const pulsed = Float32Array.from(engine.discharge())
+    // the same by hand: both sets pulsed the first step, the cells under the brush the next two, and none the last two
+    const live = wasm.startLiveSteps(region)
+    const force = cellKeys => {
+      for (let weight = 0; weight < region.weightRiver.length; weight++) {
+        if (!cellKeys.has(region.weightCellY[weight] * nX + region.weightCellX[weight])) continue
+        live.forcing[live.levelPositions[region.weightRiver[weight]]] += depth * region.weightForcing[weight]
+      }
+    }
+    const forced = [new Set(cells), new Set(underBrush), new Set(underBrush), new Set(), new Set()]
+    for (const cellKeys of forced) {
+      force(cellKeys)
+      live.route()
+    }
+    assertSameHydrograph(pulsed, live.discharge())
+    assert.ok(pulsed.some(discharge => discharge > 0), 'the pulses forced no river')
+  })
+
+  test('the live worker routes painted runoff without end, handing the page only its newest frame', async () => {
+    const { inputs, region, nX } = await readTestedRegion()
+    const worker = startWebWorker('../src/live-worker.js')
+    const received = []
+    let held // a frame the page keeps, which stops the next
+    worker.onmessage = ({ data }) => {
+      if (data.kind !== 'frame') {
+        received.push(data)
+        return
+      }
+      received.push({ ...data, classes: Float32Array.from(data.classes) })
+      if (held === undefined) worker.postMessage({ kind: 'frame', classes: data.classes }, [data.classes.buffer])
+      else held = data.classes
+    }
+    const waitFor = async (predicate, what) => {
+      for (let tries = 0; tries < 300; tries++) {
+        const found = received.find(predicate)
+        if (found !== undefined) return found
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+      throw new Error(`the live worker sent no ${what}`)
+    }
+    try {
+      worker.postMessage({ kind: 'start', nX, classes: { lowest: 0.1, perTenfold: 5, top: 30 } })
+      worker.postMessage({ kind: 'rate', rate: 1000 })
+      const { routingParametersUrl, gridWeightsUrl } = inputs
+      worker.postMessage({ kind: 'region', id: 'tested', routingParametersUrl, gridWeightsUrl })
+      const network = await waitFor(data => data.kind === 'network', 'network')
+      assert.equal(network.riverIds.length, region.riverIds.length)
+      const cellKeys = Int32Array.from(cellsOfWeights(region, nX, 200))
+      worker.postMessage({ kind: 'runoff', cellKeys, depthMillimeters: 20 })
+      const wet = await waitFor(data => data.kind === 'frame' && data.classes.some(value => value >= 1), 'frame of water')
+      const { queueMs, routeMs, hours, classesMs, sentAt } = wet.timings
+      assert.ok([queueMs, routeMs, hours, classesMs].every(value => value >= 0) && sentAt > 0, 'a frame lacks timings')
+      held = null // keep the next frame
+      await waitFor(() => held !== null, 'frame to keep')
+      const framesBefore = received.filter(data => data.kind === 'frame').length
+      await new Promise(resolve => setTimeout(resolve, 300))
+      const framesAfter = received.filter(data => data.kind === 'frame').length
+      assert.equal(framesAfter, framesBefore, 'a frame came while one was kept')
+      worker.postMessage({ kind: 'clear' })
+      worker.postMessage({ kind: 'drain' })
+      const keptClasses = held
+      held = undefined
+      worker.postMessage({ kind: 'frame', classes: keptClasses }, [keptClasses.buffer])
+      const drainedAfter = received.length
+      await waitFor((data, index) => index >= drainedAfter && data.kind === 'frame'
+        && data.classes.every(value => value === 0), 'drained frame')
+      worker.postMessage({ kind: 'pulse', underBrush: cellKeys, passedOver: new Int32Array(0), depthMillimeters: 20 })
+      const pulsedAfter = received.length
+      await waitFor((data, index) => index >= pulsedAfter && data.kind === 'frame'
+        && data.classes.some(value => value >= 1), 'frame of a pulse')
+      worker.postMessage({ kind: 'sideways' })
+      assert.match((await waitFor(data => data.kind === 'error', 'error')).message, /has no task sideways/)
+    } finally {
+      await worker.terminate()
+    }
+  })
+
+  test('a region loaded into a live engine joins without disturbing the rivers already routing', async () => {
+    const { inputs, region, nX } = await readTestedRegion()
+    const testedRegion = new URL(inputs.routingParametersUrl).pathname.split('/').at(-2) // region=<id>
+    const others = readdirSync(HYDROGRAPHY_DIRECTORY).filter(entry => {
+      return entry.startsWith('region=') && entry !== testedRegion
+    })
+    assert.ok(others.length > 0, 'no region beside the tested; run prepare_test_data.py --page-region-dirs')
+    const size = entry => statSync(new URL(`${entry}/routing.parquet`, HYDROGRAPHY_DIRECTORY)).size
+    const smallest = others.reduce((least, entry) => (size(entry) < size(least) ? entry : least))
+    const weightsFile = readdirSync(new URL(`${smallest}/`, HYDROGRAPHY_DIRECTORY)).find(file => {
+      return file.startsWith('gridweights') && file.endsWith('.parquet')
+    })
+    const other = await prepareRegion({
+      routingParametersUrl: new URL(`hydrography/${smallest}/routing.parquet`, dataUrl).href,
+      gridWeightsUrl: new URL(`hydrography/${smallest}/${weightsFile}`, dataUrl).href,
+    }, STEP_SECONDS)
+    const cellKeys = cellsOfWeights(region, nX, 200)
+    const joined = createLiveEngine(nX)
+    joined.addRegion('tested', region)
+    joined.setRunoff(cellKeys, 0.005)
+    joined.route(48)
+    joined.addRegion('other', other)
+    const joinedRegions = joined.regions().map(({ id, first }) => [id, first])
+    assert.deepEqual(joinedRegions, [['tested', 0], ['other', region.riverIds.length]])
+    joined.route(48)
+    const tested = Float32Array.from(joined.discharge().subarray(0, region.riverIds.length))
+    const alone = createLiveEngine(nX)
+    alone.addRegion('tested', region)
+    alone.setRunoff(cellKeys, 0.005)
+    alone.route(96)
+    assert.deepEqual(tested, Float32Array.from(alone.discharge()))
+    alone.drain()
+    assert.ok(alone.discharge().every(discharge => discharge === 0), 'drained rivers still hold water')
   })
 })

@@ -209,9 +209,7 @@ export function startTimeSteps(network, runoffByCell, nSteps) {
   const stepping = work.offsets[5]
   const start = () => checked(kernel.start_stepping(stepping, nRivers, levelStarts.length - 1, nSteps, nCells,
     nInjected, nOutlets, work.offsets[0], ...inputs.offsets.slice(0, 10), ...work.offsets.slice(1, 5)))
-  const checkLaidOut = () => {
-    if (layout !== nLayouts) throw new Error('the routing kernel has routed another network since this one started')
-  }
+  const checkLaidOut = checkerOfLayout(layout)
   start()
   let nRouted = 0
   return {
@@ -249,6 +247,75 @@ export function startTimeSteps(network, runoffByCell, nSteps) {
   }
 }
 
+/**
+ * Start routing every river of ``network``, its downstreamPositions, c1, c2, and c3 in routing order, live: one step at
+ * a time with the runoff forcing the caller gives each step, from no discharge. The stepper's ``forcing`` is the row of
+ * each river's forcing for the next step, in level order, the river at routing position ``p`` at
+ * ``levelPositions[p]``, and it is zeroed after each step; ``route()`` routes a step with it; ``discharge()`` and
+ * ``dischargeClasses(classing)`` are what startTimeSteps's stepper gives; and ``setDischarge(discharge)`` sets every
+ * river's discharge, in routing order, as if routed to it, which carries one network's state into another. Routing
+ * another network in this module lays it out over the stepper's arrays, and the stepper refuses to go on from then.
+ */
+export function startLiveSteps({ downstreamPositions, c1, c2, c3 }) {
+  nLayouts++
+  const checkLaidOut = checkerOfLayout(nLayouts)
+  const nRivers = downstreamPositions.length
+  const { levelStarts, order, position } = levelOrder(downstreamPositions)
+  const nOutlets = downstreamPositions.filter(downstream => downstream < 0).length
+  const nLanes = Math.ceil(nRivers / 4) * 4
+  // the leveled downstream positions and coefficients, the level starts, discharge, the two blocks of scratch, the
+  // stepping state kept between calls, the position in level order of each river in routing order, the discharge in
+  // routing order, its classes, and the forcing row, the last two as long as whole vectors
+  const work = layOut(kernel.__heap_base.value, [
+    [Int32Array, nRivers], [Float32Array, nRivers], [Float32Array, nRivers], [Float32Array, nRivers],
+    [Int32Array, levelStarts.length], [Float32Array, nRivers], [Float32Array, kernel.live_scratch_floats(nRivers)],
+    [Int32Array, kernel.stepping_scratch_ints(nRivers, nOutlets)], [Uint8Array, kernel.stepping_size()],
+    [Int32Array, nRivers], [Float32Array, nRivers], [Float32Array, nLanes], [Float32Array, nLanes],
+  ])
+  work.views[0].set(leveledDownstream(downstreamPositions, { order, position }))
+  for (const [index, coefficients] of [c1, c2, c3].entries()) {
+    work.views[index + 1].set(Float64Array.from(order, river => coefficients[river]))
+  }
+  work.views[4].set(levelStarts)
+  work.views[9].set(position)
+  work.views[12].fill(0) // the forcing row, laid out over whatever the module held before, and zeroed after each step
+  const stepping = work.offsets[8]
+  checked(kernel.start_live_stepping(stepping, nRivers, levelStarts.length - 1, nOutlets, work.offsets[4],
+    ...work.offsets.slice(0, 4), ...work.offsets.slice(5, 8)))
+  const classValues = work.views[11].subarray(0, nRivers)
+  return {
+    levelPositions: work.views[9],
+    forcing: work.views[12],
+    route() {
+      checkLaidOut()
+      checked(kernel.route_live_step(stepping, work.offsets[12]))
+    },
+    discharge() {
+      checkLaidOut()
+      checked(kernel.copy_in_routing_order(stepping, work.offsets[9], work.offsets[10]))
+      return work.views[10]
+    },
+    dischargeClasses({ lowest, perTenfold, top }) {
+      checkLaidOut()
+      checked(kernel.classify_in_routing_order(stepping, work.offsets[9], lowest, perTenfold, top, work.offsets[11]))
+      return classValues
+    },
+    setDischarge(discharge) {
+      checkLaidOut()
+      if (discharge.length !== nRivers) throw new Error(`${discharge.length} discharges cannot set ${nRivers} rivers'`)
+      work.views[10].set(discharge)
+      checked(kernel.set_discharge_in_routing_order(stepping, work.offsets[9], work.offsets[10]))
+    },
+  }
+}
+
+/** A check that the module's memory still holds the arrays laid out as ``layout``, which throws once it does not. */
+function checkerOfLayout(layout) {
+  return () => {
+    if (layout !== nLayouts) throw new Error('the routing kernel has routed another network since this one started')
+  }
+}
+
 /** Every outlet's series, from the rows of ``outletSeries`` in the order their levels put them in, in routing order. */
 function outletsInRoutingOrder(leveled, order, outletSeries, nSteps) {
   const outletPositions = Int32Array.from(leveled.downstreamPositions.keys()).filter(river => {
@@ -261,13 +328,12 @@ function outletsInRoutingOrder(leveled, order, outletSeries, nSteps) {
 }
 
 /**
- * The network with its rivers in the order of their topological levels, where a headwater is level 0 and a river is one
- * level above its highest upstream river, and within a level in routing order; the position of each level's first
- * river, then the count of rivers; and ``order``, the routing position of each river it lists.
+ * The order of the rivers of ``downstreamPositions`` by topological level, where a headwater is level 0 and a river is
+ * one level above its highest upstream river, and within a level by routing order: the position of each level's first
+ * river, then the count of rivers; ``order``, the routing position of each river in level order; and ``position``, the
+ * position in level order of each river in routing order.
  */
-function orderByLevel(network) {
-  const { downstreamPositions, c1, c2, c3, weightStart, weightCell, weightForcing } = network
-  const { injectedRivers = new Int32Array(0), injectedSeries = [] } = network
+function levelOrder(downstreamPositions) {
   const nRivers = downstreamPositions.length
   const level = new Int32Array(nRivers)
   for (let river = 0; river < nRivers; river++) {
@@ -284,6 +350,23 @@ function orderByLevel(network) {
   for (let river = 0; river < nRivers; river++) order[nextOfLevel[level[river]]++] = river
   const position = new Int32Array(nRivers)
   order.forEach((river, index) => { position[river] = index })
+  return { levelStarts, order, position }
+}
+
+/** The downstream positions of the rivers of ``downstreamPositions`` in the level order ``order`` and ``position``. */
+function leveledDownstream(downstreamPositions, { order, position }) {
+  return order.map(river => (downstreamPositions[river] >= 0 ? position[downstreamPositions[river]] : -1))
+}
+
+/**
+ * The network with its rivers in the order of their topological levels, as levelOrder orders them; the position of each
+ * level's first river, then the count of rivers; and ``order``, the routing position of each river it lists.
+ */
+function orderByLevel(network) {
+  const { downstreamPositions, c1, c2, c3, weightStart, weightCell, weightForcing } = network
+  const { injectedRivers = new Int32Array(0), injectedSeries = [] } = network
+  const nRivers = downstreamPositions.length
+  const { levelStarts, order, position } = levelOrder(downstreamPositions)
   const weightOrder = new Int32Array(weightCell.length)
   const leveledStart = new Int32Array(nRivers + 1)
   order.forEach((river, index) => {
@@ -294,9 +377,7 @@ function orderByLevel(network) {
   const injectedPositions = Array.from(injectedRivers, river => position[river])
   const injections = Array.from(injectedRivers.keys()).sort((a, b) => injectedPositions[a] - injectedPositions[b])
   const leveled = {
-    downstreamPositions: order.map(river => {
-      return downstreamPositions[river] >= 0 ? position[downstreamPositions[river]] : -1
-    }),
+    downstreamPositions: leveledDownstream(downstreamPositions, { order, position }),
     c1: Float64Array.from(order, river => c1[river]),
     c2: Float64Array.from(order, river => c2[river]),
     c3: Float64Array.from(order, river => c3[river]),

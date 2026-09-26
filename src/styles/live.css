@@ -1,0 +1,39 @@
+/* ── The live page's own styles · the brush, the tools, and the runoff sources' swatch ──────────────────────── */
+
+/* the brush, a circle following the pointer over the map, which the pointer's clicks pass through to the map */
+.brush-cursor {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 5;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    background: rgba(56, 189, 248, .12);
+    pointer-events: none;
+}
+
+/* the box that draws the runoff grid */
+label.check {
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+label.check input {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* the tool in use */
+.btn.active {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.swatch.rain {
+    height: 12px;
+    border: 1px solid rgba(56, 189, 248, .8);
+    background: rgba(56, 189, 248, .4);
+}

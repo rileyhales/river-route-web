@@ -4,7 +4,8 @@
  * discharge. As muskingum.js does, it routes the rivers of a network in either order, leaving every outlet's series
  * for the caller to read back: each river's whole series before the next (start_routing and route_next_rivers), or a
  * window of it, window by window (next_window), or every river for one time step before the next (start_stepping and
- * route_next_steps).
+ * route_next_steps), or, live, one step at a time with the runoff forcing the caller gives each step
+ * (start_live_stepping and route_live_step).
  *
  * muskingum-wasm.js lays out every array in the module's memory before calling it, so nothing here allocates memory.
  * Every function checks its arguments and reports a problem as a negative code, which describe_problem names.
@@ -161,6 +162,12 @@ int route_next_steps(struct stepping *stepping, int n_steps);
 int copy_in_routing_order(const struct stepping *stepping, const int *level_positions, float *discharge);
 int classify_in_routing_order(const struct stepping *stepping, const int *level_positions, float lowest,
                               float classes_per_tenfold, float top_class, float *class_values);
+int live_scratch_floats(int n_rivers);
+int start_live_stepping(struct stepping *stepping, int n_rivers, int n_levels, int n_outlets, const int *level_starts,
+                        const int *downstream_positions, const float *c1, const float *c2, const float *c3,
+                        float *discharge, float *scratch_floats, int *scratch_ints);
+int route_live_step(struct stepping *stepping, float *forcing);
+int set_discharge_in_routing_order(struct stepping *stepping, const int *level_positions, const float *discharge);
 
 /*
  * The steps every series is padded to: n_steps rounded up to a whole number of the blocks time-step-first routing sums
@@ -721,8 +728,9 @@ static int check_levels(int n_rivers, int n_levels, const int *level_starts, con
 }
 
 /*
- * Carve the scratch into the stepping's arrays, and set each river's push: into the river it drains into, with that
- * river's c1 and c2, or, for an outlet, nothing into itself. Returns the outlets found.
+ * Carve the pushes out of the scratch, 2 n_lanes floats and stepping_scratch_ints ints, and set each river's push: into
+ * the river it drains into, with that river's c1 and c2, or, for an outlet, nothing into itself. Returns the outlets
+ * found.
  */
 static int set_up_pushes(struct stepping *stepping, float *scratch_floats, int *scratch_ints) {
     const int n_lanes = stepping->n_lanes;
@@ -730,11 +738,6 @@ static int set_up_pushes(struct stepping *stepping, float *scratch_floats, int *
     stepping->outlets = scratch_ints + n_lanes;
     stepping->push_c1 = scratch_floats;
     stepping->push_c2 = scratch_floats + n_lanes;
-    stepping->lateral_steps = scratch_floats + (2 * n_lanes);
-    stepping->lateral_rows = scratch_floats + ((2 + STEPS_PER_LATERAL_BLOCK) * n_lanes);
-    for (int value = 0; value < stepping_scratch_floats(stepping->network.n_rivers); value++) {
-        scratch_floats[value] = 0.0F;
-    }
     const struct network network = stepping->network;
     int n_found = 0;
     for (int river = 0; river < n_lanes; river++) {
@@ -779,8 +782,14 @@ int start_stepping(struct stepping *stepping, int n_rivers, int n_levels, int n_
     if (problem != OK) {
         return problem;
     }
-    const struct stepping started = {network, n_steps, n_levels, vector_lanes(n_rivers), n_outlets, 0, level_starts,
-                                     discharge, outlet_series, 0, 0, 0, 0, 0, 0};
+    const int n_lanes = vector_lanes(n_rivers);
+    float *lateral_steps = scratch_floats + (2 * n_lanes); /* after the pushes */
+    for (int value = 2 * n_lanes; value < stepping_scratch_floats(n_rivers); value++) {
+        scratch_floats[value] = 0.0F;
+    }
+    const struct stepping started = {network, n_steps, n_levels, n_lanes, n_outlets, 0, level_starts, discharge,
+                                     outlet_series, 0, 0, 0, 0,
+                                     lateral_steps + (STEPS_PER_LATERAL_BLOCK * n_lanes), lateral_steps};
     *stepping = started;
     for (int river = 0; river < n_rivers; river++) {
         discharge[river] = 0.0F;
@@ -880,12 +889,10 @@ static void route_one_river(struct stepping stepping, float *forcing, int river)
 }
 
 /*
- * Route every river one step, a level at a time, four rivers to a vector and the rest of a level one by one. The
- * step's row of lateral_steps is each river's forcing, which its upstream rivers push into before it is routed.
+ * Route every river one step, a level at a time, four rivers to a vector and the rest of a level one by one, from
+ * forcing, each river's forcing in level order, which its upstream rivers push into before it is routed.
  */
-static void route_step(struct stepping stepping, int step) {
-    float *forcing = stepping.lateral_steps + ((step % STEPS_PER_LATERAL_BLOCK) * stepping.n_lanes);
-    push_injected_series(stepping, forcing, step);
+static void route_levels(struct stepping stepping, float *forcing) {
     for (int level = 0; level < stepping.n_levels; level++) {
         const int stop = stepping.level_starts[level + 1];
         int river = stepping.level_starts[level];
@@ -896,6 +903,13 @@ static void route_step(struct stepping stepping, int step) {
             route_one_river(stepping, forcing, river);
         }
     }
+}
+
+/* Route every river one step, forced by the step's row of lateral_steps and the series routed elsewhere. */
+static void route_step(struct stepping stepping, int step) {
+    float *forcing = stepping.lateral_steps + ((step % STEPS_PER_LATERAL_BLOCK) * stepping.n_lanes);
+    push_injected_series(stepping, forcing, step);
+    route_levels(stepping, forcing);
 }
 
 /*
@@ -999,6 +1013,80 @@ int classify_in_routing_order(const struct stepping *stepping, const int *level_
         const v128_t classes = multiply_add(log2_of_four(above_lowest), scale, offset);
         wasm_v128_store(class_values + river,
                         wasm_f32x4_min(wasm_f32x4_max(classes, wasm_f32x4_splat(0.0F)), wasm_f32x4_splat(top_class)));
+    }
+    return OK;
+}
+
+/* The floats of scratch start_live_stepping needs for n_rivers rivers, its pushes, or 0 for a bad count. */
+int live_scratch_floats(int n_rivers) {
+    return 2 * vector_lanes(n_rivers);
+}
+
+/*
+ * Check a network, whose rivers come in the order of their topological levels, and set it up to be routed live: one
+ * step at a time with the runoff forcing its caller gives each step to route_live_step, from no discharge. Returns OK
+ * or a problem. The caller lays out every array: discharge holds n_rivers floats, scratch_floats
+ * live_scratch_floats(n_rivers) floats, scratch_ints stepping_scratch_ints(n_rivers, n_outlets) ints, and stepping
+ * stepping_size() bytes.
+ */
+int start_live_stepping(struct stepping *stepping, int n_rivers, int n_levels, int n_outlets, const int *level_starts,
+                        const int *downstream_positions, const float *c1, const float *c2, const float *c3,
+                        float *discharge, float *scratch_floats, int *scratch_ints) {
+    if (stepping_scratch_ints(n_rivers, n_outlets) == 0) {
+        return PROBLEM_SIZES;
+    }
+    const int arrays_missing = stepping == 0 || c1 == 0 || c2 == 0 || c3 == 0 || discharge == 0 || scratch_floats == 0
+                               || scratch_ints == 0;
+    int problem = arrays_missing ? PROBLEM_MISSING_ARRAY : OK;
+    problem = problem == OK ? check_topology(n_rivers, downstream_positions, 0, 0) : problem;
+    problem = problem == OK ? check_levels(n_rivers, n_levels, level_starts, downstream_positions) : problem;
+    if (problem != OK) {
+        return problem;
+    }
+    const struct network network = {n_rivers, 0, 0, downstream_positions, c1, c2, c3, 0, 0, 0, 0, 0, 0};
+    const struct stepping started = {network, 0, n_levels, vector_lanes(n_rivers), n_outlets, 0, level_starts, discharge,
+                                     0, 0, 0, 0, 0, 0, 0};
+    *stepping = started;
+    for (int river = 0; river < n_rivers; river++) {
+        discharge[river] = 0.0F;
+    }
+    return set_up_pushes(stepping, scratch_floats, scratch_ints) == n_outlets ? OK : PROBLEM_OUTLETS;
+}
+
+/*
+ * Route every river of a live stepping one step, forced by forcing: each river's runoff forcing for the step in level
+ * order, n_lanes floats, which its upstream rivers push into as the step is routed, and which is zeroed after, ready
+ * for the next step's. Returns OK or a problem.
+ */
+int route_live_step(struct stepping *stepping, float *forcing) {
+    if (stepping == 0 || forcing == 0) {
+        return PROBLEM_MISSING_ARRAY;
+    }
+    if (stepping->n_lanes < 4 || stepping->push_targets == 0 || stepping->discharge == 0) {
+        return PROBLEM_LEVELS; /* not started */
+    }
+    route_levels(*stepping, forcing);
+    for (int lane = 0; lane < stepping->n_lanes; lane++) {
+        forcing[lane] = 0.0F;
+    }
+    return OK;
+}
+
+/*
+ * Set every river's discharge, as if routed to it, from discharge in routing order, into level order as
+ * level_positions, the position in level order of each river in routing order, gives. Returns OK or a problem.
+ */
+int set_discharge_in_routing_order(struct stepping *stepping, const int *level_positions, const float *discharge) {
+    if (stepping == 0 || level_positions == 0 || discharge == 0 || stepping->discharge == 0) {
+        return PROBLEM_MISSING_ARRAY;
+    }
+    const int n_rivers = stepping->network.n_rivers;
+    for (int river = 0; river < n_rivers; river++) {
+        const int position = level_positions[river];
+        if (position < 0 || position >= n_rivers) {
+            return PROBLEM_SIZES;
+        }
+        stepping->discharge[position] = discharge[river];
     }
     return OK;
 }

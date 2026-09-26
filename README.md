@@ -26,7 +26,7 @@ Only the chunks holding the cells of the routed catchments are read.
 
 ```bash
 npm install
-npm run dev        # the page, with the test data at /data/, at the address vite prints
+npm run dev        # the pages, with the test data at /data/, at the address vite prints, and /live.html
 npm test           # starts its own server, routes the test data, and compares with river-route
 npm run benchmark  # times each stage in both orders, in one thread and with pools of workers, and each kernel alone
 ```
@@ -78,6 +78,34 @@ not flicker between two. Each river is as wide as its stream order, so a change 
 area is highlighted before it is routed by the run of `riverIndex` that every river upstream of an outlet fills in the
 tiles, ending at it, and each routed river is found in the tiles at its `riverIndex` less the run's first, since routing
 parameters list rivers in `riverIndex` order.
+
+## Routing live
+
+`live.html`, a second page, beside the first and linked from its header, routes runoff that a brush gives the map
+instead of runoff read from zarr. The brush is a circle over the grid of runoff cells, whose lines the Runoff grid box
+draws once zoomed in far enough to see them, and it gives each cell whose center it covers runoff of the intensity
+chosen, up to 250 mm an hour, two ways. Pulse, held down, gives it to the cells under the brush every hour of the
+simulation while they stay under it, and once to each cell it passed over during the hour, so that a click gives one
+pulse and a drag rains along its way; Source makes the cells it passes over give it every hour until Erase takes them
+away; Pan, the tool the page starts on, moves the map. The grid is the one that a runoff array's latitudes and
+longitudes center, a quarter degree for ERA5, and any evenly spaced grid serves as well, with grid weights made for it.
+
+The routing never stops. A worker, `src/live-worker.js`, routes every river of the regions loaded an hour at a time, as
+many hours a second as the page asks, with the kernel's live stepping, whose runoff forcing its caller gives each step
+rather than reading from runoff arrays. The page's messages, the pulses, the sources placed and erased, the regions to
+load, and the rate, wait in a queue that each tick of the worker takes up first. Its answers are frames of every river's
+discharge class after the latest step, and the page is only ever handed the newest: the next frame waits until the page
+has drawn the last and handed its buffer back, so that frames never pile up behind a busy page. The panel shows the map
+updates of the last second: how many there were, and the mean milliseconds of each stage of one, from taking up the
+queue, routing, and classing discharge in the worker, to handing the frame to the page, drawing it as feature state, and
+the map drawing it on the screen, and their sum.
+
+A region loads the first time the brush passes over one of its rivers, and its rivers join the network after those of
+the regions before, each keeping its discharge, so that routing goes on undisturbed. `src/live-engine.js` gives each
+source's and pulse's runoff to the rivers whose catchments it covers, by the region's grid weights, and the map draws
+only the rivers holding more than the lowest class of discharge, 0.1 m³/s, over the network. The reset in the header
+erases every source, stops every pulse, and empties every river. The dialog's runoff grid and streams, when changed,
+start the page over from an address naming every source.
 
 ## The kernel
 

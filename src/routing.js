@@ -79,6 +79,36 @@ export async function prepareRouting(inputs, workerPool) {
   }
 }
 
+/**
+ * Everything live routing needs of every river of a region, in routing parameter order: their ids, the position each
+ * drains into, and their Muskingum coefficients at a step of ``stepSeconds``; and of each grid weight, its river's
+ * position, its cell, as a y and an x index of the runoff grid, and the forcing a meter of runoff depth in the cell
+ * gives the river, c4 times the river's catchment area in the cell.
+ */
+export async function prepareRegion({ routingParametersUrl, gridWeightsUrl }, stepSeconds) {
+  const [parameters, weights] = await Promise.all([
+    readRoutingParameters(routingParametersUrl),
+    readParquetColumns(gridWeightsUrl, GRID_WEIGHT_COLUMNS),
+  ])
+  const { riverOfWeight, catchmentAreas } = matchWeightsToRivers(parameters, weights, gridWeightsUrl)
+  const rivers = Int32Array.from(parameters.riverIds.keys())
+  const { c1, c2, c3, c4 } = muskingumCoefficients(parameters, rivers, stepSeconds)
+  const weightForcing = Float64Array.from(riverOfWeight, (river, weight) => {
+    return c4[river] * catchmentAreas[river] * weights.proportion[weight]
+  })
+  return {
+    riverIds: parameters.riverIds,
+    downstreamPositions: parameters.downstreamIndices,
+    c1,
+    c2,
+    c3,
+    weightRiver: riverOfWeight,
+    weightCellY: weights.y_index,
+    weightCellX: weights.x_index,
+    weightForcing,
+  }
+}
+
 const ROUTING_PARAMETER_COLUMNS = { river_id: Int32Array, next_river_id: Int32Array, k: Float64Array, x: Float64Array }
 const GRID_WEIGHT_COLUMNS = {
   river_id: Int32Array, x_index: Int32Array, y_index: Int32Array, area_sqm: Float64Array, proportion: Float64Array,

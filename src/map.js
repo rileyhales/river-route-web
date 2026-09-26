@@ -35,7 +35,8 @@ const CLASS_MARGIN = 0.25
 // the colors of the classes, lowest to highest and evenly spaced: viridis, which reads on the dark basemap apart from
 // the network's blue
 const DISCHARGE_COLORS = ['#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#6ece58', '#fde725']
-const DISCHARGE_CLASS = ['coalesce', ['feature-state', 'dischargeClass'], -1] // -1 until routed
+/** A river's discharge class, which drawDischargeOn sets in feature state, or -1 before it sets one. */
+export const DISCHARGE_CLASS = ['coalesce', ['feature-state', 'dischargeClass'], -1]
 const STREAM_ORDER = ['coalesce', ['get', 'strahlerOrder'], 1]
 const NO_RIVER = ['in', ['get', 'riverId'], ['literal', []]] // a filter no river passes
 const NETWORK_OPACITY = 0.85 // the network's, dimmed to DIMMED_NETWORK_OPACITY while discharge is drawn over it
@@ -43,6 +44,23 @@ const DIMMED_NETWORK_OPACITY = 0.35
 
 /** The linear-gradient of the discharge classes' colors, for the legend. */
 export const dischargeGradient = () => `linear-gradient(90deg, ${DISCHARGE_COLORS.join(', ')})`
+
+const byZoom = stops => ['interpolate', ['linear'], ['zoom'], ...stops]
+const byOrder = (smallest, largest) => ['interpolate', ['linear'], STREAM_ORDER, 1, smallest, 12, largest]
+/** A river's color by its discharge class, from the lowest class's to the top's. */
+export const CLASS_COLOR = ['interpolate', ['linear'], DISCHARGE_CLASS, ...DISCHARGE_COLORS.flatMap((color, index) => {
+  return [(index * DISCHARGE_CLASSES.top) / (DISCHARGE_COLORS.length - 1), color]
+})]
+/** A river's width by its stream order, from the smallest, order 1, to order 12, larger than any, and by zoom. */
+export const STREAM_ORDER_WIDTH = byZoom([3, byOrder(1, 4.5), 9, byOrder(1.8, 9), 14, byOrder(3.5, 14)])
+
+/** A layer of the streams source's lines, drawn only where ``filter``, when given, passes. */
+export function streamLine(id, paint, filter) {
+  return {
+    id, type: 'line', source: SOURCE, 'source-layer': SOURCE, ...(filter === undefined ? {} : { filter }),
+    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint,
+  }
+}
 
 /**
  * The reach a clicked stream's tile properties describe: its river id, its region, and the run of riverIndex that it
@@ -65,34 +83,11 @@ export function readReach({ riverId, riverIndex, upstreamCount, TDXHydroRegion }
  * to ``onError``. Resolves once the basemap's style has loaded.
  */
 export async function createRiverMap(container, streamsUrl, { onStreamClicked, onError }) {
-  const protocol = new Protocol()
-  addProtocol('pmtiles', protocol.tile)
-  const map = new MaplibreMap({
-    container,
-    style: basemapStyle(),
-    center: [0, 20],
-    zoom: 1.6,
-    hash: 'map',
-    maxZoom: 13,
-    // flat and north up, since nothing here reads better tilted or turned, and a turned view makes a river harder to
-    // aim at
-    maxPitch: 0,
-    pitchWithRotate: false,
-    touchPitch: false,
-    dragRotate: false,
-  })
-  map.touchZoomRotate.disableRotation()
-  map.keyboard.disableRotation()
-  map.addControl(new NavigationControl({ showCompass: false }), 'top-left')
-  // style.load rather than load, which waits on every tile of the first frame and so on the slowest tile server
-  await new Promise(resolve => map.once('style.load', resolve))
+  const { map, protocol } = await createBaseMap(container, onError)
   const colors = readColors()
   addStreams(map, protocol, streamsUrl, colors)
-  const discharge = drawDischargeOn(map, onError)
+  const discharge = drawDischargeOn(map, 'study-area', onError)
   let studyArea // the reach shown as the study area
-  map.on('error', event => {
-    if (event.sourceId === SOURCE) onError(event.error ?? new Error('the streams could not be read'))
-  })
   map.on('click', event => {
     const stream = nearestStream(map, event)
     if (stream !== undefined) onStreamClicked(stream.properties)
@@ -113,7 +108,12 @@ export async function createRiverMap(container, streamsUrl, { onStreamClicked, o
     /** Color the study area's rivers, routed as ``riverIds`` in riverIndex order, by the classes drawDischarge has. */
     startDischarge(riverIds) {
       if (studyArea === undefined) throw new Error('discharge is drawn only on a study area')
-      discharge.start(riverIds, studyArea)
+      const { first, last } = studyArea
+      if (riverIds.length !== last - first + 1) {
+        throw new Error(`the route has ${riverIds.length} rivers, but the study area's rivers in the tiles number `
+          + `${last - first + 1}: the tiles and the routing parameters describe different rivers`)
+      }
+      discharge.start(riverIds, feature => feature.properties.riverIndex - first, -1)
     },
     /**
      * Draw each routed river's discharge class, as DISCHARGE_CLASSES counts them, in the order startDischarge was given
@@ -133,6 +133,39 @@ export async function createRiverMap(container, streamsUrl, { onStreamClicked, o
   }
 }
 
+/**
+ * A map in ``container`` over the basemap, flat and north up, which reads PMTiles, handing whatever goes wrong, from
+ * reading a source to a layer it cannot draw, to ``onError``: the map and its PMTiles protocol, once the basemap's
+ * style has loaded.
+ */
+export async function createBaseMap(container, onError) {
+  const protocol = new Protocol()
+  addProtocol('pmtiles', protocol.tile)
+  const map = new MaplibreMap({
+    container,
+    style: basemapStyle(),
+    center: [0, 20],
+    zoom: 1.6,
+    hash: 'map',
+    maxZoom: 13,
+    // flat and north up, since nothing here reads better tilted or turned, and a turned view makes a river harder to
+    // aim at
+    maxPitch: 0,
+    pitchWithRotate: false,
+    touchPitch: false,
+    dragRotate: false,
+  })
+  map.touchZoomRotate.disableRotation()
+  map.keyboard.disableRotation()
+  map.addControl(new NavigationControl({ showCompass: false }), 'top-left')
+  map.on('error', event => {
+    onError(event.error ?? new Error(`the map could not read ${event.sourceId ?? 'its data'}`))
+  })
+  // style.load rather than load, which waits on every tile of the first frame and so on the slowest tile server
+  await new Promise(resolve => map.once('style.load', resolve))
+  return { map, protocol }
+}
+
 /** The dark gray canvas of Esri, with its labels over it, as webapp-rfs-v3's gray-dark basemap. */
 function basemapStyle() {
   const sources = Object.fromEntries(BASEMAP_TILES.map((tiles, index) => [`basemap-${index}`, {
@@ -143,7 +176,7 @@ function basemapStyle() {
 }
 
 /** The map's colors, as tokens.css defines them. */
-function readColors() {
+export function readColors() {
   const style = getComputedStyle(document.documentElement)
   const colors = Object.fromEntries(['stream', 'upstream', 'outlet'].map(name => {
     return [name, style.getPropertyValue(`--${name}`).trim()]
@@ -153,33 +186,28 @@ function readColors() {
   return colors
 }
 
-/**
- * The streams source and its three layers: the network, the study area over it, colored by discharge once routed and
- * amber until then, and the outlet over both. The study area's rivers are as wide as their stream order, from the
- * smallest, order 1, to order 12, larger than any.
- */
-function addStreams(map, protocol, url, colors) {
+/** The streams source of the PMTiles archive at ``url``, each line's id its riverId, and the network's layer. */
+export function addStreamsSource(map, protocol, url, colors) {
   protocol.add(new PMTiles(url))
   map.addSource(SOURCE, { type: 'vector', url: `pmtiles://${url}`, promoteId: { streams: 'riverId' } })
-  const line = (id, paint, filter) => ({
-    id, type: 'line', source: SOURCE, 'source-layer': SOURCE, ...(filter === undefined ? {} : { filter }),
-    layout: { 'line-cap': 'round', 'line-join': 'round' }, paint,
-  })
-  const byZoom = stops => ['interpolate', ['linear'], ['zoom'], ...stops]
-  const byOrder = (smallest, largest) => ['interpolate', ['linear'], STREAM_ORDER, 1, smallest, 12, largest]
-  const classColor = ['interpolate', ['linear'], DISCHARGE_CLASS, ...DISCHARGE_COLORS.flatMap((color, index) => {
-    return [(index * DISCHARGE_CLASSES.top) / (DISCHARGE_COLORS.length - 1), color]
-  })]
-  map.addLayer(line('streams', {
+  map.addLayer(streamLine('streams', {
     'line-color': colors.stream, 'line-width': byZoom([3, 0.7, 9, 1.4, 14, 3]), 'line-opacity': NETWORK_OPACITY,
   }))
-  map.addLayer(line('study-area', {
-    'line-color': ['case', ['<', DISCHARGE_CLASS, 0], colors.upstream, classColor],
-    'line-width': byZoom([3, byOrder(1, 4.5), 9, byOrder(1.8, 9), 14, byOrder(3.5, 14)]),
+}
+
+/**
+ * The streams source and its three layers: the network, the study area over it, colored by discharge once routed and
+ * amber until then, and the outlet over both.
+ */
+function addStreams(map, protocol, url, colors) {
+  addStreamsSource(map, protocol, url, colors)
+  map.addLayer(streamLine('study-area', {
+    'line-color': ['case', ['<', DISCHARGE_CLASS, 0], colors.upstream, CLASS_COLOR],
+    'line-width': STREAM_ORDER_WIDTH,
     'line-opacity': 0.95,
   }, NO_RIVER))
   const outletWidth = byZoom([3, 5.5, 9, 10, 14, 16])
-  map.addLayer(line('outlet', { 'line-color': colors.outlet, 'line-width': outletWidth }, NO_RIVER))
+  map.addLayer(streamLine('outlet', { 'line-color': colors.outlet, 'line-width': outletWidth }, NO_RIVER))
 }
 
 /** The rendered features of the streams' layers in a box of CLICK_PIXELS around ``point``. */
@@ -222,49 +250,55 @@ function squaredDistanceToLine(line, { lng, lat }, scale) {
 }
 
 /**
- * Discharge drawn as a class in feature state on the routed rivers that the tiles loaded hold, found again whenever
- * tiles load or the view moves, so that the rivers panned away from are no longer drawn. Each step drawn sets state
- * only on the rivers found whose class it moves, by CLASS_MARGIN, past the one drawn. What goes wrong goes to
+ * Discharge drawn as a class in feature state on the routed rivers of ``layer`` that the tiles loaded hold, found again
+ * whenever tiles load or the view moves, so that the rivers panned away from are no longer drawn. Each step drawn sets
+ * state only on the rivers found whose class it moves, by CLASS_MARGIN, past the one drawn. What goes wrong goes to
  * ``onError``.
  */
-function drawDischargeOn(map, onError) {
-  // the route's first riverIndex and river ids, each river's class drawn and the last search that found it, and the
-  // rivers that search found
+export function drawDischargeOn(map, layer, onError) {
+  // the route's river ids and how to find a river's position among them, each river's class drawn and the last search
+  // that found it, and the rivers that search found
   let drawing
   let classValues // each routed river's class at the step drawn, unrounded, in routing order
   let findScheduled = false
 
+  /** Draw the rivers found whose class has moved past the one drawn, and return how many. */
   function drawFound() {
+    let nDrawn = 0
     for (const position of drawing.found) {
       const drawn = drawing.drawnClasses[position]
       if (drawn >= 0 && Math.abs(classValues[position] - drawn) < 0.5 + CLASS_MARGIN) continue
       drawing.drawnClasses[position] = Math.round(classValues[position])
       const target = { source: SOURCE, sourceLayer: SOURCE, id: drawing.riverIds[position] }
       map.setFeatureState(target, { dischargeClass: drawing.drawnClasses[position] })
+      nDrawn++
     }
+    return nDrawn
   }
 
-  /** Find the routed rivers the tiles loaded now hold, each at its riverIndex less the route's first, and draw them. */
+  /**
+   * Find the routed rivers the tiles loaded now hold, each where the route's locate puts it, and draw them, returning
+   * how many were drawn.
+   */
   function findRivers() {
     findScheduled = false
-    if (drawing === undefined || classValues === undefined) return
+    if (drawing === undefined || classValues === undefined) return 0
     drawing.searches++
     const found = []
-    const studyArea = { sourceLayer: SOURCE, filter: map.getFilter('study-area') }
-    for (const feature of map.querySourceFeatures(SOURCE, studyArea)) {
-      const position = feature.properties.riverIndex - drawing.first
+    for (const feature of map.querySourceFeatures(SOURCE, { sourceLayer: SOURCE, filter: map.getFilter(layer) })) {
+      const position = drawing.locate(feature)
       if (drawing.lastSearches[position] === drawing.searches) continue // found already in another tile
       if (drawing.riverIds[position] !== feature.id) {
         stop()
-        onError(new Error(`river ${feature.id} of the tiles is not the river routed at its riverIndex: the tiles and `
+        onError(new Error(`river ${feature.id} of the tiles is not the river routed where it is found: the tiles and `
           + 'the routing parameters describe different rivers'))
-        return
+        return 0
       }
       drawing.lastSearches[position] = drawing.searches
       found.push(position)
     }
     drawing.found = found
-    drawFound()
+    return drawFound()
   }
 
   function scheduleFinding() {
@@ -280,16 +314,17 @@ function drawDischargeOn(map, onError) {
     map.setPaintProperty('streams', 'line-opacity', NETWORK_OPACITY)
   }
 
-  function start(riverIds, { first, last }) {
+  /**
+   * Draw the rivers ``riverIds``, finding a feature of the tiles at the position ``locate(feature)`` gives, each river
+   * drawn in ``unsetClass`` until drawn in another: -1, before any, or 0, the class of a river holding next to no
+   * water.
+   */
+  function start(riverIds, locate, unsetClass) {
     stop()
-    if (riverIds.length !== last - first + 1) {
-      throw new Error(`the route has ${riverIds.length} rivers, but the study area's rivers in the tiles number `
-        + `${last - first + 1}: the tiles and the routing parameters describe different rivers`)
-    }
     drawing = {
-      first,
       riverIds,
-      drawnClasses: new Int16Array(riverIds.length).fill(-1), // -1 until drawn
+      locate,
+      drawnClasses: new Int16Array(riverIds.length).fill(unsetClass),
       lastSearches: new Int32Array(riverIds.length),
       searches: 0,
       found: [],
@@ -297,15 +332,15 @@ function drawDischargeOn(map, onError) {
     map.setPaintProperty('streams', 'line-opacity', DIMMED_NETWORK_OPACITY)
   }
 
+  /** Draw ``values``, each river's class, and return how many rivers' state it set. */
   function draw(values) {
-    if (drawing === undefined) return // stopped, as by a problem already handed to onError, until the next start
+    if (drawing === undefined) return 0 // stopped, as by a problem already handed to onError, until the next start
     if (values.length !== drawing.riverIds.length) {
       throw new Error(`the classes of ${values.length} rivers cannot be drawn on ${drawing.riverIds.length}`)
     }
     const first = classValues === undefined
     classValues = values
-    if (first) findRivers()
-    else drawFound()
+    return first ? findRivers() : drawFound()
   }
 
   map.on('sourcedata', event => {

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="preload" href="/fonts/opensans.woff2" as="font" type="font/woff2" crossorigin/>
+  <title>Live Routing</title>
+  <script type="module" src="/src/live.js"></script>
+</head>
+<body>
+
+<div id="panel">
+  <header>
+    <h1>Live Routing</h1>
+    <div class="row">
+      <!-- the calendar-days heroicon, MIT licensed -->
+      <a id="link-period" class="btn icon" href="index.html" title="Period routing" aria-label="Period routing">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+             stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5m-9-6h.008v.008H12v-.008ZM12 15h.008v.008H12V15Zm0 2.25h.008v.008H12v-.008ZM9.75 15h.008v.008H9.75V15Zm0 2.25h.008v.008H9.75v-.008ZM7.5 15h.008v.008H7.5V15Zm0 2.25h.008v.008H7.5v-.008Zm6.75-4.5h.008v.008h-.008v-.008Zm0 2.25h.008v.008h-.008V15Zm0 2.25h.008v.008h-.008v-.008Zm2.25-4.5h.008v.008H16.5v-.008Zm0 2.25h.008v.008H16.5V15Z"/>
+        </svg>
+      </a>
+      <!-- the arrow-path heroicon, MIT licensed -->
+      <button id="btn-reset" class="btn icon" type="button" title="Reset" aria-label="Reset">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+             stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/>
+        </svg>
+      </button>
+      <!-- the cog-6-tooth heroicon, MIT licensed -->
+      <button id="btn-sources" class="btn icon" type="button" title="Data sources" aria-label="Data sources">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+             stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+  <main>
+    <div id="scroll">
+      <section id="brush">
+        <h2>Brush</h2>
+        <div class="row actions" id="tools">
+          <button class="btn active" type="button" data-tool="pan" aria-pressed="true">Pan</button>
+          <button class="btn" type="button" data-tool="pulse" aria-pressed="false">Pulse</button>
+          <button class="btn" type="button" data-tool="source" aria-pressed="false">Source</button>
+          <button class="btn" type="button" data-tool="erase" aria-pressed="false">Erase</button>
+        </div>
+        <div class="field">
+          <label for="brush-radius">Radius <em id="brush-radius-value">40 px</em></label>
+          <input id="brush-radius" type="range" min="10" max="150" step="1" value="40"/>
+        </div>
+        <div class="field">
+          <label for="brush-depth">Intensity <em id="brush-depth-value">30 mm/hr</em></label>
+          <input id="brush-depth" type="range" min="1" max="250" step="1" value="30"/>
+        </div>
+        <label class="row check"><input id="show-grid" type="checkbox"/>Runoff grid</label>
+      </section>
+      <hr/>
+      <section id="simulation">
+        <h2>Simulation</h2>
+        <div class="row actions">
+          <button id="btn-play" class="btn primary round" type="button" title="Play / pause" aria-label="Pause">❚❚</button>
+        </div>
+        <div class="field">
+          <label for="rate">Speed <em id="rate-value">1× = 24h/s</em></label>
+          <input id="rate" type="range" min="0" max="3" step="0.5" value="1"/>
+        </div>
+        <table class="table">
+          <tbody>
+          <tr><td class="k">Hours routed</td><td class="v" id="hours-routed">0</td></tr>
+          <tr><td class="k">Source cells</td><td class="v" id="source-cells">0</td></tr>
+          <tr><td class="k">Regions</td><td class="v" id="regions-loaded">—</td></tr>
+          <tr><td class="k">Rivers</td><td class="v" id="rivers-routed">0</td></tr>
+          </tbody>
+        </table>
+        <p id="error" class="error" role="alert" hidden></p>
+      </section>
+      <hr/>
+      <section id="timing">
+        <h2>Map updates</h2>
+        <table class="table">
+          <tbody>
+          <tr><td class="k">A second</td><td class="v" id="timing-updates">—</td></tr>
+          <tr><td class="k">Queue</td><td class="v" id="timing-queue">—</td></tr>
+          <tr><td class="k">Route</td><td class="v" id="timing-route">—</td></tr>
+          <tr><td class="k">Classes</td><td class="v" id="timing-classes">—</td></tr>
+          <tr><td class="k">Hand-off</td><td class="v" id="timing-hand-off">—</td></tr>
+          <tr><td class="k">Draw</td><td class="v" id="timing-draw">—</td></tr>
+          <tr><td class="k">To screen</td><td class="v" id="timing-to-screen">—</td></tr>
+          <tr><td class="k">Each update</td><td class="v" id="timing-total">—</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+</div>
+<div id="map"></div>
+
+<div id="legend-overlay" class="card map-overlay">
+  <div id="legend-items">
+    <div class="legend-item"><span class="swatch stream"></span>Streams</div>
+    <div class="legend-item"><span class="swatch rain"></span>Runoff source</div>
+  </div>
+  <div id="discharge-legend">
+    <h2>Discharge m³/s</h2>
+    <div id="legend-ramp"></div>
+    <div class="row between ticks"><span>≤0.1</span><span>10</span><span>10³</span><span>≥10⁵</span></div>
+  </div>
+</div>
+
+<div id="sources-modal" class="backdrop hidden">
+  <div class="card modal" role="dialog" aria-modal="true" aria-labelledby="sources-title">
+    <div class="modal-head">
+      <h3 id="sources-title">Data sources</h3>
+      <button class="btn sm" type="button" data-close="sources-modal" aria-label="Close">✕</button>
+    </div>
+    <form id="sources-form" class="modal-body">
+      <div class="field">
+        <label for="source-routing">Routing parameters</label>
+        <input id="source-routing" name="routingParameters" required spellcheck="false"
+               value="data/hydrography/region={region}/routing.parquet"/>
+      </div>
+      <div class="field">
+        <label for="source-weights">Grid weights</label>
+        <input id="source-weights" name="gridWeights" required spellcheck="false"
+               value="data/hydrography/region={region}/gridweights_ERA5_{region}.parquet"/>
+      </div>
+      <div class="field">
+        <label for="source-grid">Runoff grid</label>
+        <input id="source-grid" name="grid" required spellcheck="false" value="data/runoff/era5_1940.zarr/ro"/>
+      </div>
+      <div class="field">
+        <label for="source-streams">Streams</label>
+        <input id="source-streams" name="streams" required spellcheck="false"
+               value="data/hydrography/streams.pmtiles"/>
+      </div>
+    </form>
+  </div>
+</div>
+
+</body>
+</html>

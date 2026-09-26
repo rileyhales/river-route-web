@@ -89,8 +89,37 @@ async function openRunoffArray(arrayUrl) {
   return { url, array, times, stepSeconds, metersPerUnit }
 }
 
+/**
+ * The latitude of each row and the longitude of each column of the grid a (time, y, x) runoff array lies on, from the
+ * coordinate arrays named by its dimensions, beside it in the store.
+ */
+export async function readGridCoordinates(arrayUrl) {
+  const url = arrayUrl.replace(/\/+$/, '')
+  const array = await openZarrArray(url)
+  const [, yName, xName] = array.dimensionNames ?? []
+  if (array.shape.length !== 3 || !yName || !xName) {
+    throw new Error(`${url} must be a (time, y, x) array with dimension names`)
+  }
+  const [latitudes, longitudes] = await Promise.all([yName, xName].map(async name => {
+    const { data } = await zarr.get(await openZarrArray(new URL(`../${name}`, `${url}/`).href))
+    return Float64Array.from(data, Number)
+  }))
+  if (latitudes.length !== array.shape[1] || longitudes.length !== array.shape[2]) {
+    throw new Error(`${url} is ${array.shape[1]} by ${array.shape[2]}, but its ${yName} and ${xName} are not`)
+  }
+  return { latitudes, longitudes }
+}
+
+/**
+ * Open the zarr array at ``url``: v3, or failing that v2. zarrita's own open looks for v2 first on a store it has not
+ * opened before, and every array here gets a store of its own, so each v3 open would first ask for two files missing.
+ */
 export async function openZarrArray(url) {
-  return zarr.open(new zarr.FetchStore(url), { kind: 'array' })
+  const store = new zarr.FetchStore(url)
+  return zarr.open.v3(store, { kind: 'array' }).catch(error => {
+    if (!(error instanceof zarr.NotFoundError)) throw error
+    return zarr.open.v2(store, { kind: 'array' })
+  })
 }
 
 /** Whole seconds since 1970 of each CF time value, such as hours since 1940-01-01 07:00:00, in a gregorian calendar. */

@@ -16,7 +16,8 @@ const MODULES = { 'src/muskingum-relaxed.wasm': ['-mrelaxed-simd'], 'src/musking
 const EXPORTS = [
   'padded_steps', 'row_stride', 'describe_problem', 'count_peak_inflow_rows', 'routing_size', 'start_routing',
   'route_next_rivers', 'next_window', 'stepping_size', 'stepping_scratch_floats', 'stepping_scratch_ints',
-  'start_stepping', 'route_next_steps', 'copy_in_routing_order', 'classify_in_routing_order',
+  'start_stepping', 'route_next_steps', 'copy_in_routing_order', 'classify_in_routing_order', 'live_scratch_floats',
+  'start_live_stepping', 'route_live_step', 'set_discharge_in_routing_order',
 ]
 
 const TARGET = [
