@@ -3,9 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "wasm": "node build-wasm.js",
+    "predev": "npm run wasm",
     "dev": "vite",
+    "prebuild": "npm run wasm",
     "build": "vite build",
+    "pretest": "npm run wasm",
     "test": "node --test \"tests/*.test.js\"",
+    "prebenchmark": "npm run wasm",
     "benchmark": "node tests/benchmark.js"
   },
   "dependencies": {

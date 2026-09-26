@@ -1,5 +1,5 @@
 /** A worker of the pool: reads the cells of one runoff chunk, or routes a part of a network, per task. */
-import { routeRivers } from './muskingum.js'
+import { routeRivers } from './muskingum-wasm.js'
 import { openZarrArray, readChunkCells } from './runoff.js'
 
 const openArrays = new Map() // array url -> the array, opened once and read by every later task

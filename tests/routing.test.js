@@ -7,7 +7,9 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { after, before, describe, test } from 'node:test'
 import { Worker as NodeWorker } from 'node:worker_threads'
 import { createServer } from 'vite'
-import { readRoutingParameters, routeHydrograph } from '../src/routing.js'
+import { routeRivers as routeInJavaScript } from '../src/muskingum.js'
+import { routeRivers as routeInWasm } from '../src/muskingum-wasm.js'
+import { prepareRouting, readRoutingParameters, routeHydrograph } from '../src/routing.js'
 import { createWorkerPool } from '../src/worker-pool.js'
 
 const TOLERANCE = 10e-4 // as in river-route's tests: answers may differ by this share of the river's largest value
@@ -159,5 +161,30 @@ describe('workers', () => {
     } finally {
       await worker.terminate()
     }
+  })
+})
+
+describe('kernels', () => {
+  const [name] = expectedFiles
+
+  test('the WebAssembly kernel routes what the JavaScript kernel does', async () => {
+    const { expected, inputs } = readExpected(name)
+    const { network, runoffByCell, nSteps } = await prepareRouting(inputs)
+    const inJavaScript = routeInJavaScript(network, runoffByCell, nSteps)
+    assertSameHydrograph(routeInWasm(network, runoffByCell, nSteps), inJavaScript)
+    const clamped = inJavaScript.map(discharge => Math.max(discharge, 0))
+    assertSameHydrograph(clamped, expected.hydrographs[expected.outlet_river_id])
+  })
+
+  test('the WebAssembly kernel names what is wrong with a network it refuses', async () => {
+    const { expected, inputs } = readExpected(name)
+    const riverId = Number(Object.keys(expected.hydrographs).find(river => Number(river) !== expected.outlet_river_id))
+    const { network, runoffByCell, nSteps } = await prepareRouting({ ...inputs, riverId })
+    const drainsIntoItself = { ...network, downstreamPositions: network.downstreamPositions.with(0, 0) }
+    assert.throws(() => routeInWasm(drainsIntoItself, runoffByCell, nSteps), /drains into itself or into a river/)
+    const weightStart = network.weightStart.with(1, network.weightStart[0]) // the first river left with no weights
+    assert.throws(() => routeInWasm({ ...network, weightStart }, runoffByCell, nSteps), /a river has no weights/)
+    const weightCell = network.weightCell.with(0, runoffByCell.length / nSteps) // one past the last cell read
+    assert.throws(() => routeInWasm({ ...network, weightCell }, runoffByCell, nSteps), /reads a cell outside/)
   })
 })

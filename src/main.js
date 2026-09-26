@@ -30,9 +30,9 @@ form.addEventListener('submit', event => {
 routeWorker.onmessage = ({ data }) => {
   finishRouting(data.error)
   if (data.error !== undefined) return
-  const { riverId, riversRouted, timings } = data.routed
+  const { riverId, riversRouted, kernel, timings } = data.routed
   const milliseconds = Object.entries(timings).map(([stage, time]) => `${stage} ${Math.round(time)} ms`).join(', ')
-  console.info(`river ${riverId}: routed ${riversRouted} rivers; ${milliseconds}`)
+  console.info(`river ${riverId}: routed ${riversRouted} rivers with the ${kernel} kernel; ${milliseconds}`)
   chart.draw(data.routed)
 }
 
