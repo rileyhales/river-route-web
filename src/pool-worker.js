@@ -1,5 +1,5 @@
 /** A worker of the pool: reads the cells of one runoff chunk, or routes a part of a network, per task. */
-import { routeRivers } from './muskingum-wasm.js'
+import { routeRivers, routeRiversByTimeStep } from './muskingum-wasm.js'
 import { openZarrArray, readChunkCells } from './runoff.js'
 
 const openArrays = new Map() // array url -> the array, opened once and read by every later task
@@ -14,7 +14,10 @@ const TASKS = {
       throw error
     }
   },
-  routeRivers: ({ network, runoffByCell, nSteps }) => routeRivers(network, runoffByCell, nSteps),
+  route({ order, network, runoffByCell, nSteps }) {
+    if (order !== 'river' && order !== 'time') throw new Error(`order must be 'river' or 'time', not ${order}`)
+    return (order === 'river' ? routeRivers : routeRiversByTimeStep)(network, runoffByCell, nSteps)
+  },
 }
 
 self.onmessage = async ({ data: task }) => {

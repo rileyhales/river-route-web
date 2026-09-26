@@ -1,6 +1,7 @@
 /**
  * Muskingum routing with static coefficients and the uniform runoff transform, one reach per river at the runoff step,
- * every river starting from no discharge: the routing kernel, run by the page's worker and by the pool's workers.
+ * every river starting from no discharge, in JavaScript: each river's whole series before the next, or every river for
+ * one time step before the next. muskingum.c routes both faster; these are the references the tests hold it to.
  */
 
 /**
@@ -61,6 +62,48 @@ export function routeRivers(network, runoffByCell, nSteps) {
     if (rowOfRiver[river] >= 0) freeRows[nFreeRows++] = rowOfRiver[river]
   }
   return inflowRows.slice((nRows + 1) * nSteps)
+}
+
+/**
+ * Route every river for one time step before the next, the order of river-route's time kernels, and return what
+ * routeRivers does: the series of every outlet, as consecutive rows in routing order. At each step each river, in
+ * order, takes c3 times the discharge it held, its runoff's forcing, and what its upstream rivers pushed into it, then
+ * pushes c1 times its new discharge plus c2 times its old into the river it drains into, with that river's c1 and c2:
+ * summed over the upstream rivers, c1 I[t] + c2 I[t-1]. Only each river's discharge is kept from one step to the next,
+ * so ``onStep``, when given, is handed every river's discharge after each step, as a map would draw it.
+ */
+export function routeRiversByTimeStep(network, runoffByCell, nSteps, onStep) {
+  checkNetwork(network, runoffByCell, nSteps)
+  const { downstreamPositions, c1, c2, c3, weightStart, weightCell, weightForcing } = network
+  const { injectedRivers = new Int32Array(0), injectedSeries = [] } = network
+  const nRivers = downstreamPositions.length
+  const pushC1 = Float64Array.from(downstreamPositions, downstream => (downstream >= 0 ? c1[downstream] : 0))
+  const pushC2 = Float64Array.from(downstreamPositions, downstream => (downstream >= 0 ? c2[downstream] : 0))
+  const outlets = Int32Array.from(downstreamPositions.keys()).filter(river => downstreamPositions[river] < 0)
+  const outletSeries = new Float64Array(outlets.length * nSteps)
+  const discharge = new Float64Array(nRivers) // every river's discharge at the end of the last step routed
+  const pushed = new Float64Array(nRivers) // what upstream rivers have pushed into each river in this step
+  for (let step = 0; step < nSteps; step++) {
+    for (let injection = 0; injection < injectedRivers.length; injection++) {
+      const [river, series] = [injectedRivers[injection], injectedSeries[injection]]
+      pushed[river] += c1[river] * series[step] + c2[river] * (step > 0 ? series[step - 1] : 0)
+    }
+    for (let river = 0; river < nRivers; river++) {
+      let forcing = pushed[river]
+      for (let weight = weightStart[river]; weight < weightStart[river + 1]; weight++) {
+        forcing += weightForcing[weight] * runoffByCell[weightCell[weight] * nSteps + step]
+      }
+      const before = discharge[river]
+      const now = c3[river] * before + forcing
+      discharge[river] = now
+      pushed[river] = 0
+      const downstream = downstreamPositions[river]
+      if (downstream >= 0) pushed[downstream] += pushC1[river] * now + pushC2[river] * before
+    }
+    outlets.forEach((outlet, index) => { outletSeries[index * nSteps + step] = discharge[outlet] })
+    onStep?.(step, discharge)
+  }
+  return outletSeries
 }
 
 /**

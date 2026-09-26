@@ -5,27 +5,33 @@
  * array, all read over HTTP. Only the chosen river and the rivers upstream of it are routed.
  */
 import { parquetMetadata, parquetRead, parquetSchema } from 'hyparquet'
-import { kernelModule, routeRivers } from './muskingum-wasm.js'
+import { kernelModule, routeRivers, routeRiversByTimeStep } from './muskingum-wasm.js'
 import { openRunoff, readChunkCells, readRunoffCells } from './runoff.js'
 
+// the kernels of each routing order: each river's whole series before the next, or every river for each time step
+const KERNELS = { river: routeRivers, time: routeRiversByTimeStep }
+
 /**
- * Route runoff to the hydrograph of ``riverId``, or when it is undefined, of the outlet that drains the largest area.
- * Everything runs in this thread unless ``workerPool`` is given: its workers then read the runoff chunks and route the
- * regions of the network, while this thread routes the main stem the regions drain into. Even the 1,390 rivers above
- * the Willamette's mouth routed in 11 ms on 8 workers rather than 27 ms in one thread.
+ * Route runoff to the hydrograph of ``riverId``, or when it is undefined, of the outlet that drains the largest area,
+ * in ``order``: 'river', each river's whole series before the next, the faster, or 'time', every river for one time
+ * step before the next. Everything runs in this thread unless ``workerPool`` is given: its workers then read the runoff
+ * chunks and route the regions of the network, while this thread routes the main stem the regions drain into. Even the
+ * 1,390 rivers above the Willamette's mouth routed in 11 ms on 8 workers rather than 27 ms in one thread.
  */
 export async function routeHydrograph(inputs, workerPool) {
+  const order = inputs.order ?? 'river'
+  if (!Object.hasOwn(KERNELS, order)) throw new Error(`order must be 'river' or 'time', not ${order}`)
   const { riverId, times, network, runoffByCell, nSteps, timings } = await prepareRouting(inputs, workerPool)
   const started = performance.now()
   const series = workerPool?.size > 1
-    ? await routeRegionsInParallel(network, runoffByCell, nSteps, workerPool)
-    : routeRivers(network, runoffByCell, nSteps)
+    ? await routeRegionsInParallel(network, runoffByCell, nSteps, workerPool, order)
+    : KERNELS[order](network, runoffByCell, nSteps)
   return {
     riverId,
     times,
     discharge: series.map(discharge => Math.max(discharge, 0)), // clamped as river-route writes discharge
     riversRouted: network.c1.length,
-    kernel: kernelModule,
+    kernel: `${kernelModule} ${order}`,
     timings: { ...timings, routing: performance.now() - started },
   }
 }
@@ -280,18 +286,18 @@ const CAP_DIVISORS = [1, 2, 3, 4, 6, 8, 12, 16] // the caps on a region tried ar
 
 /**
  * Route the network's regions on the pool's workers at once, then its main stem in this thread with each region's
- * outflow added into the stem river it drains into. Returns the target's series, the one outlet of the stem.
+ * outflow added into the stem river it drains into, all in ``order``. Returns the target's series, the stem's outlet.
  */
-async function routeRegionsInParallel(network, runoffByCell, nSteps, workerPool) {
+async function routeRegionsInParallel(network, runoffByCell, nSteps, workerPool, order) {
   const { riversOfWorker, stemRivers } = partitionRivers(network.downstreamPositions, workerPool.size)
   const routedRegions = await Promise.all(riversOfWorker.map(async rivers => {
     const part = extractRivers(network, runoffByCell, rivers, nSteps)
     const transfer = [part.runoffByCell, ...Object.values(part.network)].map(array => array.buffer)
-    const task = { kind: 'routeRivers', network: part.network, runoffByCell: part.runoffByCell, nSteps }
+    const task = { kind: 'route', order, network: part.network, runoffByCell: part.runoffByCell, nSteps }
     return { outlets: part.outlets, outflows: await workerPool.run(task, transfer) }
   }))
   const stem = extractRivers(network, runoffByCell, stemRivers, nSteps, routedRegions)
-  return routeRivers(stem.network, stem.runoffByCell, nSteps)
+  return KERNELS[order](stem.network, stem.runoffByCell, nSteps)
 }
 
 /**

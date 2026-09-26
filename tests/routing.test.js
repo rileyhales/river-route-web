@@ -7,8 +7,8 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { after, before, describe, test } from 'node:test'
 import { Worker as NodeWorker } from 'node:worker_threads'
 import { createServer } from 'vite'
-import { routeRivers as routeInJavaScript } from '../src/muskingum.js'
-import { routeRivers as routeInWasm } from '../src/muskingum-wasm.js'
+import * as javascript from '../src/muskingum.js'
+import * as wasm from '../src/muskingum-wasm.js'
 import { prepareRouting, readRoutingParameters, routeHydrograph } from '../src/routing.js'
 import { createWorkerPool } from '../src/worker-pool.js'
 
@@ -77,9 +77,21 @@ for (const name of expectedFiles) {
       }
     })
 
+    test('routes the outlet in time order, every river for each step before the next', async () => {
+      const { expected, inputs } = readExpected(name)
+      const routed = await routeHydrograph({ ...inputs, order: 'time' })
+      assert.equal(routed.riverId, expected.outlet_river_id)
+      assertSameHydrograph(routed.discharge, expected.hydrographs[expected.outlet_river_id])
+    })
+
     test('names the river that is not in the routing parameters', async () => {
       const { inputs } = readExpected(name)
       await assert.rejects(routeHydrograph({ ...inputs, riverId: 1 }), /has no river 1$/)
+    })
+
+    test('names an order it does not route in', async () => {
+      const { inputs } = readExpected(name)
+      await assert.rejects(routeHydrograph({ ...inputs, order: 'sideways' }), /order must be 'river' or 'time'/)
     })
 
     test('names the input that cannot be read', async () => {
@@ -111,6 +123,17 @@ describe('workers', () => {
     try {
       const routed = await routeHydrograph(inputs, pool)
       assert.equal(routed.riverId, expected.outlet_river_id)
+      assertSameHydrograph(routed.discharge, expected.hydrographs[expected.outlet_river_id])
+    } finally {
+      await pool.terminate()
+    }
+  })
+
+  test("a pool routes the time order the same, its regions' outflows pushed into the main stem", async () => {
+    const { expected, inputs } = readExpected(name)
+    const pool = createWorkerPool(() => startWebWorker('../src/pool-worker.js'), 4)
+    try {
+      const routed = await routeHydrograph({ ...inputs, order: 'time' }, pool)
       assertSameHydrograph(routed.discharge, expected.hydrographs[expected.outlet_river_id])
     } finally {
       await pool.terminate()
@@ -170,8 +193,8 @@ describe('kernels', () => {
   test('the WebAssembly kernel routes what the JavaScript kernel does', async () => {
     const { expected, inputs } = readExpected(name)
     const { network, runoffByCell, nSteps } = await prepareRouting(inputs)
-    const inJavaScript = routeInJavaScript(network, runoffByCell, nSteps)
-    assertSameHydrograph(routeInWasm(network, runoffByCell, nSteps), inJavaScript)
+    const inJavaScript = javascript.routeRivers(network, runoffByCell, nSteps)
+    assertSameHydrograph(wasm.routeRivers(network, runoffByCell, nSteps), inJavaScript)
     const clamped = inJavaScript.map(discharge => Math.max(discharge, 0))
     assertSameHydrograph(clamped, expected.hydrographs[expected.outlet_river_id])
   })
@@ -181,10 +204,87 @@ describe('kernels', () => {
     const riverId = Number(Object.keys(expected.hydrographs).find(river => Number(river) !== expected.outlet_river_id))
     const { network, runoffByCell, nSteps } = await prepareRouting({ ...inputs, riverId })
     const drainsIntoItself = { ...network, downstreamPositions: network.downstreamPositions.with(0, 0) }
-    assert.throws(() => routeInWasm(drainsIntoItself, runoffByCell, nSteps), /drains into itself or into a river/)
+    assert.throws(() => wasm.routeRivers(drainsIntoItself, runoffByCell, nSteps), /drains into itself or into a river/)
     const weightStart = network.weightStart.with(1, network.weightStart[0]) // the first river left with no weights
-    assert.throws(() => routeInWasm({ ...network, weightStart }, runoffByCell, nSteps), /a river has no weights/)
+    assert.throws(() => wasm.routeRivers({ ...network, weightStart }, runoffByCell, nSteps), /a river has no weights/)
     const weightCell = network.weightCell.with(0, runoffByCell.length / nSteps) // one past the last cell read
-    assert.throws(() => routeInWasm({ ...network, weightCell }, runoffByCell, nSteps), /reads a cell outside/)
+    assert.throws(() => wasm.routeRivers({ ...network, weightCell }, runoffByCell, nSteps), /reads a cell outside/)
+  })
+
+  test('the time-step kernels route what the river-first kernels do', async () => {
+    const { expected, inputs } = readExpected(name)
+    const { network, runoffByCell, nSteps } = await prepareRouting(inputs)
+    const riverFirst = wasm.routeRivers(network, runoffByCell, nSteps)
+    for (const route of [javascript.routeRiversByTimeStep, wasm.routeRiversByTimeStep]) {
+      const timeStepFirst = route(network, runoffByCell, nSteps)
+      assertSameHydrograph(timeStepFirst, riverFirst)
+      const clamped = timeStepFirst.map(discharge => Math.max(discharge, 0))
+      assertSameHydrograph(clamped, expected.hydrographs[expected.outlet_river_id])
+    }
+  })
+
+  test("the time-step kernels hand every river's discharge, in routing order, to onStep after each step", async () => {
+    const { expected, inputs } = readExpected(name)
+    const riverId = Number(Object.keys(expected.hydrographs).find(river => Number(river) !== expected.outlet_river_id))
+    const { network, runoffByCell, nSteps } = await prepareRouting({ ...inputs, riverId })
+    const nRivers = network.downstreamPositions.length
+    const lastSteps = {}
+    const kernels = [['javascript', javascript.routeRiversByTimeStep], ['wasm', wasm.routeRiversByTimeStep]]
+    for (const [kernel, route] of kernels) {
+      let calls = 0
+      const handedOutlet = new Float64Array(nSteps)
+      const series = route(network, runoffByCell, nSteps, (step, discharge) => {
+        assert.equal(step, calls++)
+        assert.equal(discharge.length, nRivers)
+        handedOutlet[step] = discharge[nRivers - 1] // the target, the last river in routing order
+        if (step === nSteps - 1) lastSteps[kernel] = Float64Array.from(discharge)
+      })
+      assert.equal(calls, nSteps)
+      assert.deepEqual(handedOutlet, Float64Array.from(series))
+    }
+    assertSameHydrograph(lastSteps.wasm, lastSteps.javascript) // every river at the last step, back in routing order
+  })
+
+  test('routing in windows of steps routes what routing every step at once does', async () => {
+    const { inputs } = readExpected(name)
+    const { network, runoffByCell, nSteps } = await prepareRouting(inputs)
+    const allAtOnce = wasm.routeRivers(network, runoffByCell, nSteps)
+    const longer = 8 * Math.ceil(nSteps / 8) + 8
+    for (const stepsPerWindow of [64, longer]) { // windows the steps are not a whole number of, and one longer
+      assertSameHydrograph(wasm.routeRiversByTimeWindow(network, runoffByCell, nSteps, stepsPerWindow), allAtOnce)
+    }
+    const window = 12 // not a whole number of 8 steps
+    const refused = /the routing kernel refused the network: a window is not a whole number of blocks of 8 steps/
+    assert.throws(() => wasm.routeRiversByTimeWindow(network, runoffByCell, nSteps, window), refused)
+  })
+
+  test("routing in windows hands every river's discharge in each window, in routing order, to onWindow", async () => {
+    const { expected, inputs } = readExpected(name)
+    const riverId = Number(Object.keys(expected.hydrographs).find(river => Number(river) !== expected.outlet_river_id))
+    const { network, runoffByCell, nSteps } = await prepareRouting({ ...inputs, riverId })
+    const nRivers = network.downstreamPositions.length
+    const stepsPerWindow = 64
+    let lastStep
+    wasm.routeRiversByTimeStep(network, runoffByCell, nSteps, (step, discharge) => {
+      if (step === nSteps - 1) lastStep = Float64Array.from(discharge)
+    })
+    const firstSteps = []
+    const handedOutlet = new Float64Array(nSteps)
+    const lastWindowStep = new Float64Array(nRivers)
+    const series = wasm.routeRiversByTimeWindow(network, runoffByCell, nSteps, stepsPerWindow, (firstStep, discharge) => {
+      firstSteps.push(firstStep)
+      assert.equal(discharge.length, nRivers * stepsPerWindow)
+      const nWindowSteps = Math.min(stepsPerWindow, nSteps - firstStep)
+      for (let step = 0; step < nWindowSteps; step++) {
+        handedOutlet[firstStep + step] = discharge[(nRivers - 1) * stepsPerWindow + step] // the target, the last river
+      }
+      for (let river = 0; river < nRivers && firstStep + nWindowSteps === nSteps; river++) {
+        lastWindowStep[river] = discharge[river * stepsPerWindow + nWindowSteps - 1]
+      }
+    })
+    const nWindows = Math.ceil(nSteps / stepsPerWindow)
+    assert.deepEqual(firstSteps, Array.from({ length: nWindows }, (_, window) => window * stepsPerWindow))
+    assert.deepEqual(handedOutlet, Float64Array.from(series))
+    assertSameHydrograph(lastWindowStep, lastStep) // every river at the last step, against the time-step kernel
   })
 })

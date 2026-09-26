@@ -15,7 +15,8 @@ const SOURCE = 'src/muskingum.c'
 const MODULES = { 'src/muskingum-relaxed.wasm': ['-mrelaxed-simd'], 'src/muskingum.wasm': [] } // output: features
 const EXPORTS = [
   'padded_steps', 'row_stride', 'describe_problem', 'count_peak_inflow_rows', 'routing_size', 'start_routing',
-  'route_next_rivers',
+  'route_next_rivers', 'next_window', 'stepping_size', 'stepping_scratch_floats', 'stepping_scratch_ints',
+  'start_stepping', 'route_next_steps', 'copy_in_routing_order',
 ]
 
 const TARGET = [
