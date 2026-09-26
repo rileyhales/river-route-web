@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>River Routing</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f9f9f7;
+      --surface: #fcfcfb;
+      --ink: #0b0b0b;
+      --ink-secondary: #52514e;
+      --ink-muted: #898781;
+      --gridline: #e1e0d9;
+      --baseline: #c3c2b7;
+      --border: rgba(11, 11, 11, 0.10);
+      --series: #2a78d6;
+      --critical: #d03b3b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --page: #0d0d0d;
+        --surface: #1a1a19;
+        --ink: #ffffff;
+        --ink-secondary: #c3c2b7;
+        --gridline: #2c2c2a;
+        --baseline: #383835;
+        --border: rgba(255, 255, 255, 0.10);
+        --series: #3987e5;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+    h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
+    form { display: grid; gap: 12px; margin-bottom: 20px; }
+    label { display: grid; gap: 4px; color: var(--ink-secondary); font-size: 13px; }
+    input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--ink);
+      font: 14px ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    button {
+      justify-self: start;
+      padding: 8px 20px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--series);
+      color: #ffffff;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: progress; }
+    #error { color: var(--critical); white-space: pre-wrap; }
+    figure {
+      position: relative;
+      margin: 0;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      transition: opacity 150ms;
+    }
+    figure[aria-busy="true"] { opacity: 0.4; }
+    figcaption { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-weight: 600; }
+    figcaption button {
+      padding: 4px 12px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--ink-secondary);
+      font-weight: 400;
+      font-size: 13px;
+    }
+    svg { display: block; width: 100%; overflow: visible; }
+    svg:focus-visible { outline: 2px solid var(--series); outline-offset: 4px; border-radius: 4px; }
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .tooltip strong { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+    .tooltip span { color: var(--ink-secondary); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>River routing</h1>
+    <form id="inputs">
+      <label>Routing parameters
+        <input name="routingParametersUrl" required spellcheck="false"
+          value="/data/hydrography/region=7020014250/routing.parquet">
+      </label>
+      <label>Grid weights
+        <input name="gridWeightsUrl" required spellcheck="false"
+          value="/data/hydrography/region=7020014250/gridweights_ERA5_7020014250.parquet">
+      </label>
+      <label>Runoff
+        <input name="runoffUrl" required spellcheck="false" value="/data/runoff/era5_1940.zarr/ro">
+      </label>
+      <button type="submit">Route</button>
+    </form>
+    <p id="error" role="alert" hidden></p>
+    <figure id="hydrograph" hidden>
+      <figcaption><span></span><button type="button">Download CSV</button></figcaption>
+    </figure>
+  </main>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
