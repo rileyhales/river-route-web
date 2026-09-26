@@ -1,10 +1,11 @@
 /**
- * A hydrograph drawn as an SVG line chart: discharge against time with the peak labeled, and a crosshair that reads out
- * the discharge at the step under the pointer or moved with the arrow keys. The CSV download holds every value.
+ * A hydrograph drawn as an SVG line chart: discharge against time with the peak labeled, a crosshair that reads out the
+ * discharge at the step under the pointer or moved with the arrow keys, and a mark at the step the player shows. The
+ * CSV download holds every value.
  */
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
 const MARGIN = { top: 28, right: 16, bottom: 28, left: 64 }
-const PLOT_HEIGHT = 320
+const PLOT_HEIGHT = 200
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const MONTHS_PER_TICK = [1, 2, 3, 6, 12, 24, 60, 120]
 const STEPS_MOVED_BY_KEY = new Map([['ArrowLeft', -1], ['ArrowRight', 1], ['Home', -Infinity], ['End', Infinity]])
@@ -17,7 +18,6 @@ const formatDischarge = value => `${formatNumber(value)} m³/s`
 
 /** A chart in ``figure`` that draws each hydrograph it is given, redrawn to fit whenever the figure resizes. */
 export function createHydrographChart(figure) {
-  const caption = figure.querySelector('figcaption span')
   const svg = document.createElementNS(SVG_NAMESPACE, 'svg')
   svg.setAttribute('tabindex', '0')
   const tooltip = Object.assign(document.createElement('div'), { className: 'tooltip', hidden: true })
@@ -25,8 +25,15 @@ export function createHydrographChart(figure) {
   let hydrograph
   let chart
   let focusedStep = 0
+  let markedStep
+  const mark = () => {
+    chart.marker.setAttribute('visibility', markedStep === undefined ? 'hidden' : 'visible')
+    if (markedStep !== undefined) chart.marker.setAttribute('transform', `translate(${chart.x(markedStep)} 0)`)
+  }
   const redraw = () => {
-    if (hydrograph !== undefined) chart = drawChart(svg, hydrograph, Math.floor(svg.getBoundingClientRect().width))
+    if (hydrograph === undefined) return
+    chart = drawChart(svg, hydrograph, Math.floor(svg.getBoundingClientRect().width))
+    mark()
   }
   new ResizeObserver(redraw).observe(figure)
   const readOut = step => showStep(chart, hydrograph, figure, tooltip, step)
@@ -47,16 +54,24 @@ export function createHydrographChart(figure) {
     focusedStep = Math.min(Math.max(focusedStep + move * (event.shiftKey ? 24 : 1), 0), last)
     readOut(focusedStep)
   })
-  figure.querySelector('figcaption button').addEventListener('click', () => downloadCsv(hydrograph))
   return {
+    /** Draw a hydrograph: the ``riverId``, ``times``, and ``discharge`` of a route, with no step marked. */
     draw(next) {
       hydrograph = next
       focusedStep = 0
-      caption.textContent = `Discharge of river ${next.riverId}`
+      markedStep = undefined
       svg.setAttribute('aria-label', `Hydrograph of river ${next.riverId}`)
-      figure.hidden = false
       tooltip.hidden = true
       redraw()
+    },
+    /** Mark ``step`` of the hydrograph drawn. */
+    markStep(step) {
+      markedStep = step
+      if (chart !== undefined) mark()
+    },
+    /** Download the hydrograph drawn as CSV. */
+    downloadCsv() {
+      downloadCsv(hydrograph)
     },
   }
 }
@@ -69,7 +84,7 @@ function svgElement(parent, name, attributes, text) {
   return element
 }
 
-/** Draw the axes, the series, and the peak, and return the scales and the hidden crosshair the read out moves. */
+/** Draw the axes, the series, and the peak; return the scales, the crosshair the read out moves, and the mark. */
 function drawChart(svg, { times, discharge }, width) {
   svg.replaceChildren()
   const height = MARGIN.top + PLOT_HEIGHT + MARGIN.bottom
@@ -86,15 +101,17 @@ function drawChart(svg, { times, discharge }, width) {
   drawTimeAxis(svg, monthTicks(times[0], times[last]), xOfTime)
   const points = Array.from(discharge, (value, step) => `${x(step).toFixed(1)},${y(value).toFixed(1)}`).join('L')
   const area = `M${x(0)},${y(0)}L${points}L${x(last)},${y(0)}Z`
-  svgElement(svg, 'path', { d: area, fill: 'var(--series)', 'fill-opacity': 0.1 })
-  const line = { d: `M${points}`, fill: 'none', stroke: 'var(--series)', 'stroke-width': 2 }
+  svgElement(svg, 'path', { d: area, fill: 'var(--accent)', 'fill-opacity': 0.1 })
+  const line = { d: `M${points}`, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2 }
   svgElement(svg, 'path', { ...line, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' })
   drawPeak(svg, x(peakStep), y(discharge[peakStep]), discharge[peakStep], width)
+  const plotSpan = { y1: MARGIN.top, y2: MARGIN.top + PLOT_HEIGHT }
+  const marker = svgElement(svg, 'line', { ...plotSpan, stroke: 'var(--upstream)', 'stroke-width': 2 })
   const crosshair = svgElement(svg, 'g', { visibility: 'hidden' })
-  svgElement(crosshair, 'line', { y1: MARGIN.top, y2: MARGIN.top + PLOT_HEIGHT, stroke: 'var(--ink-muted)' })
-  svgElement(crosshair, 'circle', { r: 4, fill: 'var(--series)', stroke: 'var(--surface)', 'stroke-width': 2 })
+  svgElement(crosshair, 'line', { ...plotSpan, stroke: 'var(--text-faint)' })
+  svgElement(crosshair, 'circle', { r: 4, fill: 'var(--accent)', stroke: 'var(--surface)', 'stroke-width': 2 })
   const stepAt = pixel => Math.min(Math.max(Math.round(((pixel - MARGIN.left) / plotWidth) * last), 0), last)
-  return { x, y, stepAt, crosshair }
+  return { x, y, stepAt, crosshair, marker }
 }
 
 /** Round discharge ticks from zero to the first tick at or above the peak, about five of them. */
@@ -107,9 +124,9 @@ function dischargeTicks(peak) {
 }
 
 function drawDischargeAxis(svg, ticks, y, width) {
-  const labelStyle = { fill: 'var(--ink-muted)', 'font-size': 12, 'text-anchor': 'end' }
+  const labelStyle = { fill: 'var(--text-faint)', 'font-size': 12, 'text-anchor': 'end' }
   for (const tick of ticks) {
-    const color = tick === 0 ? 'var(--baseline)' : 'var(--gridline)'
+    const color = tick === 0 ? 'var(--border)' : 'var(--border-soft)'
     svgElement(svg, 'line', { x1: MARGIN.left, x2: width - MARGIN.right, y1: y(tick), y2: y(tick), stroke: color })
     const label = { ...labelStyle, x: MARGIN.left - 8, y: y(tick), 'dominant-baseline': 'middle' }
     svgElement(svg, 'text', label, formatNumber(tick))
@@ -136,18 +153,18 @@ function drawTimeAxis(svg, ticks, xOfTime) {
   const bottom = MARGIN.top + PLOT_HEIGHT
   ticks.forEach(({ time, year, month }, index) => {
     const x = xOfTime(time)
-    svgElement(svg, 'line', { x1: x, x2: x, y1: bottom, y2: bottom + 4, stroke: 'var(--baseline)' })
+    svgElement(svg, 'line', { x1: x, x2: x, y1: bottom, y2: bottom + 4, stroke: 'var(--border)' })
     const label = month === 0 || index === 0 ? `${MONTH_NAMES[month]} ${year}` : MONTH_NAMES[month]
-    const position = { x, y: bottom + 18, 'text-anchor': 'middle', fill: 'var(--ink-muted)', 'font-size': 12 }
+    const position = { x, y: bottom + 18, 'text-anchor': 'middle', fill: 'var(--text-faint)', 'font-size': 12 }
     svgElement(svg, 'text', position, label)
   })
 }
 
 /** Mark the peak with a ringed dot and label its discharge, anchored to stay inside the chart. */
 function drawPeak(svg, x, y, peak, width) {
-  svgElement(svg, 'circle', { cx: x, cy: y, r: 4, fill: 'var(--series)', stroke: 'var(--surface)', 'stroke-width': 2 })
+  svgElement(svg, 'circle', { cx: x, cy: y, r: 4, fill: 'var(--accent)', stroke: 'var(--surface)', 'stroke-width': 2 })
   const anchor = x < width * 0.2 ? 'start' : x > width * 0.8 ? 'end' : 'middle'
-  const label = { x, y: y - 10, 'text-anchor': anchor, fill: 'var(--ink-secondary)', 'font-size': 12 }
+  const label = { x, y: y - 10, 'text-anchor': anchor, fill: 'var(--text-dim)', 'font-size': 12 }
   svgElement(svg, 'text', label, `Peak ${formatDischarge(peak)}`)
 }
 

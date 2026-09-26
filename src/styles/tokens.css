@@ -1,0 +1,59 @@
+/* ── Tokens · the colors, type, and sizes every sheet reads, patterned after webapp-rfs-v3 ─────────────── */
+
+@font-face {
+    font-family: "Open Sans";
+    font-weight: 400 700;
+    font-style: normal;
+    font-display: swap;
+    src: url("/fonts/opensans.woff2") format("woff2");
+}
+
+:root {
+    color-scheme: dark;
+
+    /* Ground and surfaces */
+    --bg: #0a0e17;
+    --surface: #111827;
+    --surface2: #1e293b;
+    --border: #334155;
+    --border-soft: rgba(51, 65, 85, .6);
+    --rule: #e2e8f0;
+    --text: #f8fafc;
+    --text-dim: #dde5ee;
+    --text-faint: #b6c2d3;
+    --accent: #38bdf8;
+    --accent-dim: #0ea5e9;
+    --on-accent: #04121b;
+    --danger: #ef4444;
+    --danger-text: #fca5a5;
+    --shadow-color: 0, 0, 0;
+
+    /* The map's own colors, which src/map.js reads from here: the network, the study area's rivers, and its outlet.
+       The discharge ramp is the map's alone, and it colors the legend itself. */
+    --stream: #3B82F6;
+    --upstream: #F5A623;
+    --outlet: #B45309;
+
+    /* Type scale */
+    --fs-2xs: 10px;
+    --fs-sm: 12px;
+    --fs-md: 13px;
+    --fs-base: 14px;
+    --fs-lg: 15px;
+    --fs-xl: 21px;
+
+    /* Radius scale */
+    --r-sm: 4px;
+    --r-md: 6px;
+    --r-lg: 8px;
+
+    /* Space, control sizing, layout */
+    --gap: 8px;
+    --size: 36px;
+    --icon: 20px;
+    --panel-w: clamp(360px, 25%, 480px);
+
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+    --sans: "Open Sans", "Segoe UI", system-ui, sans-serif;
+    font-family: var(--sans), sans-serif;
+}

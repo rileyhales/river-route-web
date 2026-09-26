@@ -1,6 +1,7 @@
 /**
  * Routes a hydrograph off the page's thread, with a pool of workers, kept from one route to the next, to read the
- * runoff and route the regions of large networks. Where a worker cannot start workers of its own, it all runs here.
+ * runoff and route the regions of large networks, and hands it back with the network and runoff it was routed from.
+ * Where a worker cannot start workers of its own, it all runs here.
  */
 import { routeHydrograph } from './routing.js'
 import { createWorkerPool } from './worker-pool.js'
@@ -21,7 +22,10 @@ self.onmessage = async ({ data: inputs }) => {
       workerPool = startWorkerPool()
     }
     const routed = await routeHydrograph(inputs, workerPool)
-    self.postMessage({ routed }, [routed.times.buffer, routed.discharge.buffer])
+    const { times, discharge, riverIds, runoffByCell, network } = routed
+    self.postMessage({ routed }, [times, discharge, riverIds, runoffByCell, ...Object.values(network)].map(array => {
+      return array.buffer
+    }))
   } catch (error) {
     self.postMessage({ error: `${error.message ?? error}` })
   }

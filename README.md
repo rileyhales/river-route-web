@@ -1,19 +1,26 @@
 # jsrr
 
 The simplest case of river-route for the browser: Muskingum routing with static coefficients, the uniform runoff
-transform, one reach per river routed at the runoff time step, and every river starting from no discharge. The page
-reads three inputs over HTTP and routes the hydrograph of the region's outlet, the one that drains the largest area,
-from only the rivers upstream of it. It matches river-route to within 1e-6 of the peak discharge.
+transform, one reach per river routed at the runoff time step, and every river starting from no discharge. It matches
+river-route to within 1e-6 of the peak discharge.
 
-| Input              | Format                                                                                               |
-|--------------------|------------------------------------------------------------------------------------------------------|
-| Routing parameters | parquet with `river_id`, `next_river_id`, `k`, `x`, every river listed before the one it drains into |
-| Grid weights       | parquet with `river_id`, `x_index`, `y_index`, `area_sqm`, `proportion`: a grid weights netCDF as parquet |
-| Runoff             | a (time, y, x) zarr array of runoff depths, v2 or v3, such as `.../era5_1940.zarr/ro`                 |
+The page is a map of every stream, patterned after webapp-rfs-v3. Clicking a river picks the study area, that river and
+every river upstream of it; the panel then routes it over the time period chosen, reading its inputs over HTTP, and the
+player plays every river's discharge on the map a step at a time while the panel draws the outlet's hydrograph. The
+reset button in the panel's header clears the study area and its route, keeping the period and the data sources.
 
-The runoff's time coordinate is the array named by its first dimension, beside it in the store. Its steps must be
-uniform, and its units attribute one river-route reads (m, mm, kg m-2), or absent for meters. Only the chunks holding
-the cells of the routed catchments are read.
+| Input              | Format                                                                                         |
+|--------------------|------------------------------------------------------------------------------------------------|
+| Routing parameters | parquet with `river_id`, `next_river_id`, `k`, `x`, every river before the one it drains into  |
+| Grid weights       | parquet with `river_id`, `x_index`, `y_index`, `area_sqm`, `proportion`, as in the netCDF      |
+| Runoff             | (time, y, x) zarr arrays of runoff depths, v2 or v3, a year each, like `.../era5_1940.zarr/ro` |
+| Streams            | PMTiles of the streams, with `riverId`, `riverIndex`, `upstreamCount`, and `TDXHydroRegion`    |
+
+The data sources dialog, the cog in the panel's header, names each input by a url, in which `{region}` stands for the
+study area's region and `{year}` for each year of the period. Each year's runoff array must go on from the step after
+the last year's ends, on the same grid. Its time coordinate is the array named by its first dimension, beside it in the
+store; its steps must be uniform, and its units attribute one river-route reads (m, mm, kg m-2), or absent for meters.
+Only the chunks holding the cells of the routed catchments are read.
 
 ## Running
 
@@ -34,24 +41,43 @@ The dev server serves `data/` at `/data/` as plain files, following links, which
 ../river-route/.venv/bin/python tests/prepare_test_data.py \
     --region-dir ~/data/v3TestData/hydrography/region=7020014250 \
     --runoff ~/data/era5_zarr_16x16_yearly/year=1940/era5_1940.zarr \
-    --rivers 720184033
+    --rivers 720184033 \
+    --page-region-dirs ~/data/v3TestData/hydrography/region=* \
+    --more-runoff ~/data/era5_zarr_16x16_yearly/year=194[1-9]/era5_194[1-9].zarr \
+    --streams ~/data/v3TestData/hydrography/global/streams.pmtiles
 ```
 
 It links the region's `routing.parquet` and the runoff store, writes the grid weights as parquet with
 `grid_weights_to_parquet`, and routes the region with river-route to record the hydrographs of the main outlet and of
-each river in `--rivers`, which the tests reproduce.
+each river in `--rivers`, which the tests reproduce. The last three arguments serve the page: every region a click may
+pick, linked and converted the same way, the runoff of the years after, which a test also reads, and the streams. The
+dev server answers a request for a byte range of a file, as the PMTiles reader asks.
 
 ## How it routes
 
-The page hands the inputs to a worker, which reads the two parquet files and the runoff array's metadata at once, keeps
-the rivers upstream of the target, and reads their cells' runoff chunk by chunk on a pool of workers. The pool then
+The page hands the inputs to a worker, which reads the two parquet files and the metadata of each year's runoff array at
+once, keeps the rivers upstream of the target, and reads their cells' runoff over the period chunk by chunk on a pool of
+workers. The pool then
 routes regions of the network at once, subtrees of at most a few thousand rivers packed onto the workers largest first,
 while the page's worker routes the main stem the regions drain into. Each river's whole series is routed before the
 next, with its upstream inflow summed in a row of a pool that only a handful of rivers need at once.
 
-`routeHydrograph` also routes time-step-first, every river for one step before the next, as a map drawing each step
-would, when its inputs say `order: 'time'`; the page routes river-first, the default, and both give the same
-hydrograph.
+`routeHydrograph` also routes time-step-first, every river for one step before the next, when its inputs say
+`order: 'time'`; the page routes river-first, the default, and both give the same hydrograph.
+
+The worker hands the page what it routed, the network and its runoff, and the page routes it again time-step-first in
+its own thread, one step for each the player shows, with the stepper of `src/muskingum-wasm.js`, so that a period of any
+length is never held as every river's discharge at every step. The kernel then classes every river's discharge, 5
+classes to each tenfold from 0.1 m³/s or less up to 10⁵ m³/s or more: 0.13 ms a step for the Amazon's 237,718 rivers,
+against 3.6 ms in JavaScript, and the step itself routes in 0.23 ms. Finer classes would differ by colors too close to
+tell apart, and every class a river crosses costs the map an update: at 5 a tenfold, about 4% of rivers change class an
+hour, against 7% at 8. The map draws classes as feature state, as webapp-rfs-v3 animates its forecasts, on only the
+routed rivers the tiles in view hold, found again as tiles load and the view moves, and a step sets state only on a
+river whose discharge has moved a quarter of a class past the edge of the class drawn, so that a river near an edge does
+not flicker between two. Each river is as wide as its stream order, so a change of class updates only its color. A study
+area is highlighted before it is routed by the run of `riverIndex` that every river upstream of an outlet fills in the
+tiles, ending at it, and each routed river is found in the tiles at its `riverIndex` less the run's first, since routing
+parameters list rivers in `riverIndex` order.
 
 ## The kernel
 

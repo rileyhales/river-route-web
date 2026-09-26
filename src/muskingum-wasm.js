@@ -1,7 +1,9 @@
 /**
- * The routing kernel of muskingum.c, compiled to WebAssembly by build-wasm.js, as a routeRivers that takes what
- * muskingum.js's does and returns the same series in float32. Each call lays its arrays out in the module's memory, one
- * after another from where the module's own memory ends, growing it as needed, and copies the outlets' series back out.
+ * The routing kernels of muskingum.c, compiled to WebAssembly by build-wasm.js, as a routeRivers and a
+ * routeRiversByTimeStep that take what muskingum.js's do and return the same series in float32, and a stepper for
+ * callers that step through time themselves. Each route lays its arrays out in the module's memory, one after another
+ * from where the module's own memory ends, over the last route's, growing it as needed, and copies the outlets' series
+ * back out.
  */
 const ALIGNMENT = 16 // bytes: every array starts on a boundary of the module's 128 bit vectors
 const WASM_PAGE_BYTES = 65536
@@ -17,6 +19,7 @@ const MODULE = new URL('./muskingum.wasm', import.meta.url)
 /** Which module routes: 'relaxed' where the browser compiles relaxed SIMD, 'baseline' where it does not. */
 export let kernelModule = 'relaxed'
 const kernel = await instantiateKernel()
+let nLayouts = 0 // the networks laid out in the module's memory so far, each over the one before
 
 async function instantiateKernel() {
   try {
@@ -77,6 +80,7 @@ function copyPadded(padded, series, nSteps, nPadded) {
  * and then the scratch count_peak_inflow_rows needs. Returns the counts both kernels take and the layout.
  */
 function layOutNetwork(network, runoffByCell, nSteps) {
+  nLayouts++
   const { downstreamPositions, c1, c2, c3, weightStart, weightCell, weightForcing } = network
   const { injectedRivers = new Int32Array(0), injectedSeries = [] } = network
   const [nRivers, nCells, nInjected] = [downstreamPositions.length, runoffByCell.length / nSteps, injectedRivers.length]
@@ -156,44 +160,103 @@ export function routeRiversByTimeWindow(network, runoffByCell, nSteps, stepsPerW
  * Route every river for one time step before the next and return what routeRivers does. ``onStep``, when given, is
  * handed each step and every river's discharge after it, in routing order, a view of the module's memory that the next
  * step overwrites. See routeRiversByTimeStep in muskingum.js.
+ */
+export function routeRiversByTimeStep(network, runoffByCell, nSteps, onStep) {
+  const stepper = startTimeSteps(network, runoffByCell, nSteps)
+  if (onStep === undefined) {
+    stepper.advance(nSteps)
+  } else {
+    for (let step = 0; step < nSteps; step++) {
+      stepper.advance(1)
+      onStep(step, stepper.discharge())
+    }
+  }
+  return stepper.outletSeries()
+}
+
+/**
+ * Start routing every river for one time step before the next, for a caller that steps through time itself, such as a
+ * map drawing each step. The stepper's ``advance(n)`` routes the next ``n`` steps, or as many as are left, and returns
+ * the steps routed so far; ``discharge()`` is every river's discharge after the last step routed, in routing order, a
+ * view of the module's memory that the next advance overwrites; ``dischargeClasses({ lowest, perTenfold, top })`` is
+ * each one's class of discharge instead, ``perTenfold`` classes to each tenfold above ``lowest``, from 0 up to ``top``
+ * and unrounded, computed in the module and viewed the same way; ``restart()`` goes back to before the first step, with
+ * no discharge; and ``outletSeries()``, once every step is routed, is what routeRivers returns. Routing another network
+ * in this module lays it out over the stepper's arrays, and the stepper refuses to go on from then.
  *
  * The rivers are routed in the order of their topological levels, headwaters first, and within a level in routing
  * order. A river's push into the river it drains into is read back by the very next river three times in four in
  * routing order, which chains every river on the one before; no river pushes into one of its own level, which breaks
  * that chain, and the Columbia routed 3.2 times faster.
  */
-export function routeRiversByTimeStep(network, runoffByCell, nSteps, onStep) {
+export function startTimeSteps(network, runoffByCell, nSteps) {
   const { leveled, levelStarts, order } = orderByLevel(network)
   const { nRivers, nCells, nInjected, nOutlets, inputs } = layOutNetwork(leveled, runoffByCell, nSteps)
-  // the level starts, discharge, outlet_series, the two blocks of scratch, the stepping state kept between calls, and,
-  // when onStep is given, the position in level order of each river in routing order and its discharge in routing order
-  const handing = onStep === undefined ? 0 : nRivers
+  const layout = nLayouts
+  // the level starts, discharge, outlet_series, the two blocks of scratch, the stepping state kept between calls, the
+  // position in level order of each river in routing order, the discharge in routing order, and its classes, as many
+  // as fill whole vectors
   const work = layOut(inputs.end, [
     [Int32Array, levelStarts.length], [Float32Array, nRivers], [Float32Array, nOutlets * nSteps],
     [Float32Array, kernel.stepping_scratch_floats(nRivers)],
     [Int32Array, kernel.stepping_scratch_ints(nRivers, nOutlets)],
-    [Uint8Array, kernel.stepping_size()], [Int32Array, handing], [Float32Array, handing],
+    [Uint8Array, kernel.stepping_size()], [Int32Array, nRivers], [Float32Array, nRivers],
+    [Float32Array, Math.ceil(nRivers / 4) * 4],
   ])
+  const classValues = work.views[8].subarray(0, nRivers)
   work.views[0].set(levelStarts)
   order.forEach((river, position) => { work.views[6][river] = position })
   const stepping = work.offsets[5]
-  checked(kernel.start_stepping(stepping, nRivers, levelStarts.length - 1, nSteps, nCells, nInjected, nOutlets,
-    work.offsets[0], ...inputs.offsets.slice(0, 10), ...work.offsets.slice(1, 5)))
-  const stepsPerCall = onStep === undefined ? STEPS_PER_CALL : 1
-  for (let step = 0; step < nSteps; step += stepsPerCall) {
-    checked(kernel.route_next_steps(stepping, stepsPerCall))
-    if (onStep !== undefined) {
-      checked(kernel.copy_in_routing_order(stepping, work.offsets[6], work.offsets[7]))
-      onStep(step, work.views[7])
-    }
+  const start = () => checked(kernel.start_stepping(stepping, nRivers, levelStarts.length - 1, nSteps, nCells,
+    nInjected, nOutlets, work.offsets[0], ...inputs.offsets.slice(0, 10), ...work.offsets.slice(1, 5)))
+  const checkLaidOut = () => {
+    if (layout !== nLayouts) throw new Error('the routing kernel has routed another network since this one started')
   }
-  // the outlets' rows, from the order their levels put them in back to routing order
+  start()
+  let nRouted = 0
+  return {
+    advance(n) {
+      checkLaidOut()
+      if (!(Number.isInteger(n) && n >= 1)) throw new Error(`a stepper advances a whole number of steps, not ${n}`)
+      const stop = Math.min(nRouted + n, nSteps)
+      while (nRouted < stop) {
+        const stepsThisCall = Math.min(STEPS_PER_CALL, stop - nRouted)
+        checked(kernel.route_next_steps(stepping, stepsThisCall))
+        nRouted += stepsThisCall
+      }
+      return nRouted
+    },
+    discharge() {
+      checkLaidOut()
+      checked(kernel.copy_in_routing_order(stepping, work.offsets[6], work.offsets[7]))
+      return work.views[7]
+    },
+    dischargeClasses({ lowest, perTenfold, top }) {
+      checkLaidOut()
+      checked(kernel.classify_in_routing_order(stepping, work.offsets[6], lowest, perTenfold, top, work.offsets[8]))
+      return classValues
+    },
+    restart() {
+      checkLaidOut()
+      start()
+      nRouted = 0
+    },
+    outletSeries() {
+      checkLaidOut()
+      if (nRouted < nSteps) throw new Error(`the outlets' series have ${nSteps - nRouted} steps left to route`)
+      return outletsInRoutingOrder(leveled, order, work.views[2], nSteps)
+    },
+  }
+}
+
+/** Every outlet's series, from the rows of ``outletSeries`` in the order their levels put them in, in routing order. */
+function outletsInRoutingOrder(leveled, order, outletSeries, nSteps) {
   const outletPositions = Int32Array.from(leveled.downstreamPositions.keys()).filter(river => {
     return leveled.downstreamPositions[river] < 0
   })
   const rows = Array.from(outletPositions.keys()).sort((a, b) => order[outletPositions[a]] - order[outletPositions[b]])
-  const outlets = new Float32Array(nOutlets * nSteps)
-  rows.forEach((row, index) => outlets.set(work.views[2].subarray(row * nSteps, (row + 1) * nSteps), index * nSteps))
+  const outlets = new Float32Array(outletPositions.length * nSteps)
+  rows.forEach((row, index) => outlets.set(outletSeries.subarray(row * nSteps, (row + 1) * nSteps), index * nSteps))
   return outlets
 }
 
@@ -211,7 +274,14 @@ function orderByLevel(network) {
     const downstream = downstreamPositions[river]
     if (downstream >= 0) level[downstream] = Math.max(level[downstream], level[river] + 1)
   }
-  const order = Int32Array.from(downstreamPositions.keys()).sort((a, b) => level[a] - level[b] || a - b)
+  const nLevels = level.reduce((highest, riverLevel) => Math.max(highest, riverLevel), 0) + 1
+  const levelStarts = new Int32Array(nLevels + 1)
+  level.forEach(riverLevel => { levelStarts[riverLevel + 1]++ })
+  for (let index = 1; index <= nLevels; index++) levelStarts[index] += levelStarts[index - 1]
+  // each river at the next free position of its level, which keeps each level's rivers in routing order
+  const nextOfLevel = levelStarts.slice(0, nLevels)
+  const order = new Int32Array(nRivers)
+  for (let river = 0; river < nRivers; river++) order[nextOfLevel[level[river]]++] = river
   const position = new Int32Array(nRivers)
   order.forEach((river, index) => { position[river] = index })
   const weightOrder = new Int32Array(weightCell.length)
@@ -221,9 +291,6 @@ function orderByLevel(network) {
     leveledStart[index + 1] = leveledStart[index] + stop - first
     for (let weight = first; weight < stop; weight++) weightOrder[leveledStart[index] + weight - first] = weight
   })
-  const levelStarts = new Int32Array(Math.max(...level) + 2)
-  level.forEach(riverLevel => { levelStarts[riverLevel + 1]++ })
-  for (let index = 1; index < levelStarts.length; index++) levelStarts[index] += levelStarts[index - 1]
   const injectedPositions = Array.from(injectedRivers, river => position[river])
   const injections = Array.from(injectedRivers.keys()).sort((a, b) => injectedPositions[a] - injectedPositions[b])
   const leveled = {

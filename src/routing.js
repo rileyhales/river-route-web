@@ -1,8 +1,9 @@
 /**
  * Muskingum routing of gridded runoff to the hydrograph of one river, the simplest case of river-route: static
  * coefficients, the uniform runoff transform, one reach per river, a routing step equal to the runoff step, and every
- * river starting from no discharge. The routing parameters and grid weights are parquet files and the runoff is a zarr
- * array, all read over HTTP. Only the chosen river and the rivers upstream of it are routed.
+ * river starting from no discharge. The routing parameters and grid weights are parquet files and the runoff is zarr
+ * arrays, one after another in time, all read over HTTP. Only the chosen river and the rivers upstream of it are
+ * routed, over the chosen period.
  */
 import { parquetMetadata, parquetRead, parquetSchema } from 'hyparquet'
 import { kernelModule, routeRivers, routeRiversByTimeStep } from './muskingum-wasm.js'
@@ -16,12 +17,14 @@ const KERNELS = { river: routeRivers, time: routeRiversByTimeStep }
  * in ``order``: 'river', each river's whole series before the next, the faster, or 'time', every river for one time
  * step before the next. Everything runs in this thread unless ``workerPool`` is given: its workers then read the runoff
  * chunks and route the regions of the network, while this thread routes the main stem the regions drain into. Even the
- * 1,390 rivers above the Willamette's mouth routed in 11 ms on 8 workers rather than 27 ms in one thread.
+ * 1,390 rivers above the Willamette's mouth routed in 11 ms on 8 workers rather than 27 ms in one thread. What was
+ * routed comes back too: the network, the id of each of its rivers, and their cells' runoff, as prepareRouting gives
+ * them, for a map to route again step by step.
  */
 export async function routeHydrograph(inputs, workerPool) {
   const order = inputs.order ?? 'river'
   if (!Object.hasOwn(KERNELS, order)) throw new Error(`order must be 'river' or 'time', not ${order}`)
-  const { riverId, times, network, runoffByCell, nSteps, timings } = await prepareRouting(inputs, workerPool)
+  const { riverId, riverIds, times, network, runoffByCell, nSteps, timings } = await prepareRouting(inputs, workerPool)
   const started = performance.now()
   const series = workerPool?.size > 1
     ? await routeRegionsInParallel(network, runoffByCell, nSteps, workerPool, order)
@@ -33,32 +36,41 @@ export async function routeHydrograph(inputs, workerPool) {
     riversRouted: network.c1.length,
     kernel: `${kernelModule} ${order}`,
     timings: { ...timings, routing: performance.now() - started },
+    network,
+    riverIds,
+    runoffByCell,
   }
 }
 
 /**
  * Read everything routing to the hydrograph of ``riverId`` needs: the network of it and the rivers upstream of it, in
- * the form routeRivers takes, and its cells' runoff, read on ``workerPool`` when it is given.
+ * the form routeRivers takes, the id of each of its rivers, and its cells' runoff over ``period``, { start, stop } in
+ * seconds since 1970 with stop left out, or over every step of ``runoffUrls`` without one. Runoff is read on
+ * ``workerPool`` when it is given.
  */
-export async function prepareRouting({ routingParametersUrl, gridWeightsUrl, runoffUrl, riverId }, workerPool) {
+export async function prepareRouting(inputs, workerPool) {
+  const { routingParametersUrl, gridWeightsUrl, runoffUrls, period, riverId } = inputs
   const started = performance.now()
   const [parameters, weights, runoff] = await Promise.all([
     readRoutingParameters(routingParametersUrl),
     readParquetColumns(gridWeightsUrl, GRID_WEIGHT_COLUMNS),
-    openRunoff(runoffUrl),
+    openRunoff(runoffUrls, period),
   ])
   const { riverOfWeight, catchmentAreas } = matchWeightsToRivers(parameters, weights, gridWeightsUrl)
   const target = riverId === undefined
     ? findMainOutlet(parameters.downstreamIndices, catchmentAreas)
     : findRiver(parameters, riverId, routingParametersUrl)
-  const network = prepareNetwork(parameters, weights, riverOfWeight, catchmentAreas, target, runoff)
+  const rivers = selectUpstreamRivers(parameters.downstreamIndices, target)
+  const network = prepareNetwork(parameters, weights, riverOfWeight, catchmentAreas, rivers, runoff)
   const inputsRead = performance.now()
+  const arrays = new Map(runoff.parts.map(part => [part.url, part.array]))
   const readChunk = workerPool === undefined
-    ? task => readChunkCells(runoff.array, task)
+    ? task => readChunkCells(arrays.get(task.arrayUrl), task)
     : task => workerPool.run({ kind: 'readChunkCells', ...task })
   const runoffByCell = await readRunoffCells(runoff, network.cellY, network.cellX, readChunk)
   return {
     riverId: parameters.riverIds[target],
+    riverIds: rivers.map(river => parameters.riverIds[river]),
     times: runoff.times,
     network,
     runoffByCell,
@@ -166,11 +178,12 @@ function findRiver({ indexOfRiver }, riverId, url) {
 }
 
 /**
- * Everything routing reads about the rivers upstream of ``target``, in routing parameter order with the target last:
- * the position each drains into (-1 for the target), their Muskingum coefficients, the runoff cells, and the weights.
+ * Everything routing reads about ``rivers``, a target and the rivers upstream of it in routing parameter order with the
+ * target last: the position each drains into (-1 for the target), their Muskingum coefficients, the runoff cells, and
+ * the weights.
  */
-function prepareNetwork(parameters, weights, riverOfWeight, catchmentAreas, target, runoff) {
-  const rivers = selectUpstreamRivers(parameters.downstreamIndices, target)
+function prepareNetwork(parameters, weights, riverOfWeight, catchmentAreas, rivers, runoff) {
+  const target = rivers[rivers.length - 1]
   const positionOfRiver = new Int32Array(parameters.riverIds.length).fill(-1)
   rivers.forEach((river, position) => { positionOfRiver[river] = position })
   const downstreamPositions = rivers.map(river => {

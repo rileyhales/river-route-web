@@ -34,7 +34,7 @@ function readExpected(name) {
   const inputs = {
     routingParametersUrl: new URL(expected.routing_parameters, dataUrl).href,
     gridWeightsUrl: new URL(expected.grid_weights, dataUrl).href,
-    runoffUrl: new URL(expected.runoff, dataUrl).href,
+    runoffUrls: [new URL(expected.runoff, dataUrl).href],
   }
   return { expected, inputs }
 }
@@ -99,7 +99,70 @@ for (const name of expectedFiles) {
       const routingParametersUrl = `${inputs.routingParametersUrl}.missing`
       await assert.rejects(routeHydrograph({ ...inputs, routingParametersUrl }), /\.missing answered 404/)
     })
+
+    test("reads a period's runoff as those steps of all of it", async () => {
+      const { inputs } = readExpected(name)
+      const all = await prepareRouting(inputs)
+      const [first, stop] = [1000, 1744] // a month of hours
+      const period = await prepareRouting({ ...inputs, period: { start: all.times[first], stop: all.times[stop] } })
+      assert.deepEqual(period.times, all.times.slice(first, stop))
+      assert.deepEqual(period.riverIds, all.riverIds)
+      assertSameRows(period.runoffByCell, period.nSteps, all.runoffByCell, all.nSteps, first)
+    })
+
+    test('reads a period across two runoff arrays, the second going on from the first', async () => {
+      const { expected, inputs } = readExpected(name)
+      assert.ok(expected.more_runoff?.length > 0, 'no runoff beside the routed; run prepare_test_data.py --more-runoff')
+      const nextUrl = new URL(expected.more_runoff[0], dataUrl).href
+      const [before, after] = await Promise.all([inputs.runoffUrls, [nextUrl]].map(runoffUrls => {
+        return prepareRouting({ ...inputs, runoffUrls })
+      }))
+      const period = { start: before.times[before.nSteps - 24], stop: after.times[24] } // a day on each side
+      const across = await prepareRouting({ ...inputs, runoffUrls: [...inputs.runoffUrls, nextUrl], period })
+      assert.deepEqual(across.times, Float64Array.of(...before.times.slice(-24), ...after.times.slice(0, 24)))
+      const acrossBefore = sliceRows(across.runoffByCell, across.nSteps, 0, 24)
+      const acrossAfter = sliceRows(across.runoffByCell, across.nSteps, 24, 48)
+      assertSameRows(acrossBefore, 24, before.runoffByCell, before.nSteps, before.nSteps - 24)
+      assertSameRows(acrossAfter, 24, after.runoffByCell, after.nSteps, 0)
+    })
+
+    test('names runoff arrays that do not go on from one another, and a period with no runoff', async () => {
+      const { inputs } = readExpected(name)
+      const runoffUrls = [...inputs.runoffUrls, ...inputs.runoffUrls]
+      await assert.rejects(prepareRouting({ ...inputs, runoffUrls }), /does not start the step after .* ends$/)
+      const period = { start: Date.UTC(1800, 0, 1) / 1000, stop: Date.UTC(1800, 0, 2) / 1000 }
+      await assert.rejects(prepareRouting({ ...inputs, period }), /have no runoff from 1800-01-01T00:00:00.000Z/)
+      const backwards = { start: period.stop, stop: period.start }
+      await assert.rejects(prepareRouting({ ...inputs, period: backwards }), /a period must start before it stops/)
+    })
+
+    test('the data server answers a byte range of a file, and refuses one it cannot serve', async () => {
+      const url = new URL(`expected/${name}`, dataUrl)
+      const size = (await (await fetch(url)).arrayBuffer()).byteLength
+      const partial = await fetch(url, { headers: { range: 'bytes=5-14' } })
+      assert.equal(partial.status, 206)
+      assert.equal(partial.headers.get('content-range'), `bytes 5-14/${size}`)
+      assert.equal((await partial.arrayBuffer()).byteLength, 10)
+      const refused = await fetch(url, { headers: { range: 'bytes=14-5' } })
+      assert.equal(refused.status, 416)
+      assert.equal(refused.headers.get('content-range'), `bytes */${size}`)
+    })
   })
+}
+
+/** The steps from ``first`` up to ``stop`` of each row of a (row, step) array with rows of ``nSteps``. */
+function sliceRows(rows, nSteps, first, stop) {
+  const sliced = new Float32Array((rows.length / nSteps) * (stop - first))
+  for (let row = 0; row < rows.length / nSteps; row++) {
+    sliced.set(rows.subarray(row * nSteps + first, row * nSteps + stop), row * (stop - first))
+  }
+  return sliced
+}
+
+/** Require each row of ``actual``, rows of ``nSteps``, to be the same steps of ``desired``'s rows from ``first``. */
+function assertSameRows(actual, nSteps, desired, nDesiredSteps, first) {
+  assert.equal(actual.length / nSteps, desired.length / nDesiredSteps, 'the arrays have different counts of rows')
+  assert.deepEqual(actual, sliceRows(desired, nDesiredSteps, first, first + nSteps))
 }
 
 /** A browser worker module on a node worker thread, behind the parts of the Web Worker interface the page uses. */
@@ -245,6 +308,55 @@ describe('kernels', () => {
     assertSameHydrograph(lastSteps.wasm, lastSteps.javascript) // every river at the last step, back in routing order
   })
 
+  test('a stepper routes a step at a time what routeRiversByTimeStep does, starts over, and stops when overwritten',
+    async () => {
+      const { expected, inputs } = readExpected(name)
+      const riverId = Number(Object.keys(expected.hydrographs).find(river => {
+        return Number(river) !== expected.outlet_river_id
+      }))
+      const { network, runoffByCell, nSteps } = await prepareRouting({ ...inputs, riverId })
+      const handed = new Map()
+      const series = wasm.routeRiversByTimeStep(network, runoffByCell, nSteps, (step, discharge) => {
+        if (step === 99 || step === 199) handed.set(step, Float32Array.from(discharge))
+      })
+      const stepper = wasm.startTimeSteps(network, runoffByCell, nSteps)
+      assert.equal(stepper.advance(100), 100)
+      assert.deepEqual(Float32Array.from(stepper.discharge()), handed.get(99))
+      assert.equal(stepper.advance(100), 200)
+      assert.deepEqual(Float32Array.from(stepper.discharge()), handed.get(199))
+      assert.throws(() => stepper.outletSeries(), new RegExp(`series have ${nSteps - 200} steps left to route`))
+      stepper.restart()
+      assert.equal(stepper.advance(100), 100)
+      assert.deepEqual(Float32Array.from(stepper.discharge()), handed.get(99))
+      assert.throws(() => stepper.advance(0.5), /advances a whole number of steps, not 0.5/)
+      assert.equal(stepper.advance(2 * nSteps), nSteps)
+      assert.deepEqual(stepper.outletSeries(), series)
+      wasm.routeRivers(network, runoffByCell, nSteps)
+      assert.throws(() => stepper.advance(1), /has routed another network since this one started/)
+    })
+
+  test("a stepper classes each river's discharge by tenfolds, to within the kernel's logarithm", async () => {
+    const { inputs } = readExpected(name)
+    const { network, runoffByCell, nSteps } = await prepareRouting(inputs)
+    const stepper = wasm.startTimeSteps(network, runoffByCell, nSteps)
+    const classing = { lowest: 0.01, perTenfold: 8, top: 48 }
+    const bound = 2 * 0.0077 * Math.log10(2) * classing.perTenfold // twice the error of the kernel's base 2 logarithm
+    let worst = 0
+    for (const steps of [24, 1976, nSteps]) { // a day, a quarter of a year, and every step
+      stepper.advance(steps)
+      const discharge = Float32Array.from(stepper.discharge())
+      const classes = stepper.dischargeClasses(classing)
+      discharge.forEach((value, river) => {
+        const tenfolds = Math.log10(Math.max(value, classing.lowest) / classing.lowest)
+        const exact = Math.min(Math.max(tenfolds * classing.perTenfold, 0), classing.top)
+        worst = Math.max(worst, Math.abs(classes[river] - exact))
+      })
+    }
+    assert.ok(worst <= bound, `a class is off by ${worst}, more than ${bound}`)
+    const refused = /discharge classes need a lowest discharge, classes a tenfold, and a top class above 0/
+    assert.throws(() => stepper.dischargeClasses({ ...classing, perTenfold: 0 }), refused)
+  })
+
   test('routing in windows of steps routes what routing every step at once does', async () => {
     const { inputs } = readExpected(name)
     const { network, runoffByCell, nSteps } = await prepareRouting(inputs)
@@ -271,7 +383,7 @@ describe('kernels', () => {
     const firstSteps = []
     const handedOutlet = new Float64Array(nSteps)
     const lastWindowStep = new Float64Array(nRivers)
-    const series = wasm.routeRiversByTimeWindow(network, runoffByCell, nSteps, stepsPerWindow, (firstStep, discharge) => {
+    const handWindow = (firstStep, discharge) => {
       firstSteps.push(firstStep)
       assert.equal(discharge.length, nRivers * stepsPerWindow)
       const nWindowSteps = Math.min(stepsPerWindow, nSteps - firstStep)
@@ -281,7 +393,8 @@ describe('kernels', () => {
       for (let river = 0; river < nRivers && firstStep + nWindowSteps === nSteps; river++) {
         lastWindowStep[river] = discharge[river * stepsPerWindow + nWindowSteps - 1]
       }
-    })
+    }
+    const series = wasm.routeRiversByTimeWindow(network, runoffByCell, nSteps, stepsPerWindow, handWindow)
     const nWindows = Math.ceil(nSteps / stepsPerWindow)
     assert.deepEqual(firstSteps, Array.from({ length: nWindows }, (_, window) => window * stepsPerWindow))
     assert.deepEqual(handedOutlet, Float64Array.from(series))

@@ -1,127 +1,163 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="preload" href="/fonts/opensans.woff2" as="font" type="font/woff2" crossorigin/>
   <title>River Routing</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --page: #f9f9f7;
-      --surface: #fcfcfb;
-      --ink: #0b0b0b;
-      --ink-secondary: #52514e;
-      --ink-muted: #898781;
-      --gridline: #e1e0d9;
-      --baseline: #c3c2b7;
-      --border: rgba(11, 11, 11, 0.10);
-      --series: #2a78d6;
-      --critical: #d03b3b;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        color-scheme: dark;
-        --page: #0d0d0d;
-        --surface: #1a1a19;
-        --ink: #ffffff;
-        --ink-secondary: #c3c2b7;
-        --gridline: #2c2c2a;
-        --baseline: #383835;
-        --border: rgba(255, 255, 255, 0.10);
-        --series: #3987e5;
-      }
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--page);
-      color: var(--ink);
-      font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
-    }
-    main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
-    h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
-    form { display: grid; gap: 12px; margin-bottom: 20px; }
-    label { display: grid; gap: 4px; color: var(--ink-secondary); font-size: 13px; }
-    input {
-      width: 100%;
-      padding: 8px 10px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: var(--surface);
-      color: var(--ink);
-      font: 14px ui-monospace, "SF Mono", Menlo, monospace;
-    }
-    button {
-      justify-self: start;
-      padding: 8px 20px;
-      border: 0;
-      border-radius: 6px;
-      background: var(--series);
-      color: #ffffff;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    button:disabled { opacity: 0.5; cursor: progress; }
-    #error { color: var(--critical); white-space: pre-wrap; }
-    figure {
-      position: relative;
-      margin: 0;
-      padding: 16px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--surface);
-      transition: opacity 150ms;
-    }
-    figure[aria-busy="true"] { opacity: 0.4; }
-    figcaption { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-weight: 600; }
-    figcaption button {
-      padding: 4px 12px;
-      border: 1px solid var(--border);
-      background: transparent;
-      color: var(--ink-secondary);
-      font-weight: 400;
-      font-size: 13px;
-    }
-    svg { display: block; width: 100%; overflow: visible; }
-    svg:focus-visible { outline: 2px solid var(--series); outline-offset: 4px; border-radius: 4px; }
-    .tooltip {
-      position: absolute;
-      pointer-events: none;
-      padding: 6px 10px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: var(--surface);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-      font-size: 13px;
-      white-space: nowrap;
-    }
-    .tooltip strong { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
-    .tooltip span { color: var(--ink-secondary); }
-  </style>
+  <script type="module" src="/src/main.js"></script>
 </head>
 <body>
+
+<div id="panel">
+  <header>
+    <h1>River Routing</h1>
+    <div class="row">
+      <!-- the arrow-path heroicon, MIT licensed -->
+      <button id="btn-reset" class="btn icon" type="button" title="Reset" aria-label="Reset">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+             stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/>
+        </svg>
+      </button>
+      <!-- the cog-6-tooth heroicon, MIT licensed -->
+      <button id="btn-sources" class="btn icon" type="button" title="Data sources" aria-label="Data sources">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+             stroke="currentColor" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
   <main>
-    <h1>River routing</h1>
-    <form id="inputs">
-      <label>Routing parameters
-        <input name="routingParametersUrl" required spellcheck="false"
-          value="/data/hydrography/region=7020014250/routing.parquet">
-      </label>
-      <label>Grid weights
-        <input name="gridWeightsUrl" required spellcheck="false"
-          value="/data/hydrography/region=7020014250/gridweights_ERA5_7020014250.parquet">
-      </label>
-      <label>Runoff
-        <input name="runoffUrl" required spellcheck="false" value="/data/runoff/era5_1940.zarr/ro">
-      </label>
-      <button type="submit">Route</button>
-    </form>
-    <p id="error" role="alert" hidden></p>
-    <figure id="hydrograph" hidden>
-      <figcaption><span></span><button type="button">Download CSV</button></figcaption>
-    </figure>
+    <div id="scroll">
+      <section id="study-area">
+        <h2>Study area</h2>
+        <table class="table">
+          <tbody>
+          <tr><td class="k">Outlet river</td><td class="v" id="outlet-river">—</td></tr>
+          <tr><td class="k">Region</td><td class="v" id="outlet-region">—</td></tr>
+          <tr><td class="k">Rivers</td><td class="v" id="study-area-rivers">—</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <hr/>
+      <section id="period">
+        <h2>Time period</h2>
+        <form id="period-form">
+          <div class="field">
+            <label for="period-start">Start</label>
+            <input id="period-start" name="start" type="date" value="1940-01-01" required/>
+          </div>
+          <div class="field">
+            <label for="period-end">End</label>
+            <input id="period-end" name="end" type="date" value="1940-12-31" required/>
+          </div>
+          <div class="row actions">
+            <button id="btn-route" class="btn primary" type="submit" disabled>Route</button>
+          </div>
+        </form>
+        <p id="error" class="error" role="alert" hidden></p>
+      </section>
+      <div id="outlet-discharge" hidden>
+        <hr/>
+        <section>
+          <h2>Outlet discharge</h2>
+          <figure id="hydrograph"></figure>
+          <div class="row actions">
+            <button id="btn-csv" class="btn" type="button">
+              <!-- the arrow-down-tray heroicon, MIT licensed -->
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                   stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+              </svg>
+              CSV
+            </button>
+          </div>
+        </section>
+      </div>
+    </div>
   </main>
-  <script type="module" src="/src/main.js"></script>
+</div>
+<div id="map"></div>
+
+<div id="legend-overlay" class="card map-overlay">
+  <div id="legend-items">
+    <div class="legend-item"><span class="swatch stream"></span>Streams</div>
+    <div class="legend-item"><span class="swatch upstream"></span>Study area</div>
+    <div class="legend-item"><span class="swatch outlet"></span>Outlet</div>
+  </div>
+  <div id="discharge-legend" hidden>
+    <h2>Discharge m³/s</h2>
+    <div id="legend-ramp"></div>
+    <div class="row between ticks"><span>≤0.1</span><span>10</span><span>10³</span><span>≥10⁵</span></div>
+  </div>
+</div>
+
+<div id="player" class="card player map-overlay">
+  <div id="progress-bar"></div>
+  <button id="btn-play" class="btn primary round" type="button" title="Play / pause (space)"
+          aria-label="Play">▶</button>
+  <div class="col grow">
+    <div class="row between">
+      <span id="time-label" class="time">—</span>
+      <span id="step-label" class="step">–/–</span>
+    </div>
+    <input id="slider" type="range" min="0" max="0" step="1" value="0" aria-label="Time step" disabled/>
+  </div>
+  <div class="col speed">
+    <label for="speed">Speed</label>
+    <select id="speed">
+      <option value="1">1d/s</option>
+      <option value="2" selected>2d/s</option>
+      <option value="4">4d/s</option>
+      <option value="8">8d/s</option>
+      <option value="16">16d/s</option>
+    </select>
+  </div>
+</div>
+
+<div id="sources-modal" class="backdrop hidden">
+  <div class="card modal" role="dialog" aria-modal="true" aria-labelledby="sources-title">
+    <div class="modal-head">
+      <h3 id="sources-title">Data sources</h3>
+      <button class="btn sm" type="button" data-close="sources-modal" aria-label="Close">✕</button>
+    </div>
+    <form id="sources-form" class="modal-body">
+      <div class="field">
+        <label for="source-routing">Routing parameters</label>
+        <input id="source-routing" name="routingParameters" required spellcheck="false"
+               value="data/hydrography/region={region}/routing.parquet"/>
+      </div>
+      <div class="field">
+        <label for="source-weights">Grid weights</label>
+        <input id="source-weights" name="gridWeights" required spellcheck="false"
+               value="data/hydrography/region={region}/gridweights_ERA5_{region}.parquet"/>
+      </div>
+      <div class="field">
+        <label for="source-runoff">Runoff</label>
+        <input id="source-runoff" name="runoff" required spellcheck="false" value="data/runoff/era5_{year}.zarr/ro"/>
+      </div>
+      <div class="field row">
+        <div class="grow">
+          <label for="source-first-year">First year</label>
+          <input id="source-first-year" name="firstYear" type="number" step="1" required value="1940"/>
+        </div>
+        <div class="grow">
+          <label for="source-last-year">Last year</label>
+          <input id="source-last-year" name="lastYear" type="number" step="1" required value="1949"/>
+        </div>
+      </div>
+      <div class="field">
+        <label for="source-streams">Streams</label>
+        <input id="source-streams" name="streams" required spellcheck="false"
+               value="data/hydrography/streams.pmtiles"/>
+      </div>
+    </form>
+  </div>
+</div>
+
 </body>
 </html>

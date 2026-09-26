@@ -1,10 +1,12 @@
 """
-Prepare the data the jsrr tests read over HTTP from the dev server, in ``data``:
+Prepare the data the jsrr tests and page read over HTTP from the dev server, in ``data``:
 
     hydrography/region=<id>/routing.parquet                  a link to the region's routing parameters, read in place
     hydrography/region=<id>/gridweights_<grid>_<id>.parquet  the region's grid weights, converted from netCDF to parquet
-    runoff/<store>.zarr                                      a link to the runoff zarr store, read in place
-    expected/region=<id>_<store>.json                        the hydrographs river-route routes for the test rivers
+    hydrography/<streams>.pmtiles                            a link to the streams the page's map draws, read in place
+    runoff/<store>.zarr                                      a link to each runoff zarr store, read in place
+    expected/region=<id>_<store>.json                        the hydrographs river-route routes for the test rivers,
+                                                             and the runoff stores linked beside the routed one
 
 river-route routes the expected hydrographs the way jsrr routes: static coefficients, the uniform transform, a standard
 network, and a routing step equal to the runoff step. The region's main outlet, the one draining the largest area, is
@@ -14,6 +16,13 @@ always a test river, and --rivers adds others. Build the data with
         --region-dir ~/data/v3TestData/hydrography/region=7020014250 \
         --runoff ~/data/era5_zarr_16x16_yearly/year=1940/era5_1940.zarr \
         --rivers 720184033
+
+The page routes whichever region holds the river clicked on its map, from any runoff store beside the tests' one, so
+--page-region-dirs, --more-runoff, and --streams add what it reads:
+
+        --page-region-dirs ~/data/v3TestData/hydrography/region=* \
+        --more-runoff ~/data/era5_zarr_16x16_yearly/year=194[1-9]/era5_194[1-9].zarr \
+        --streams ~/data/v3TestData/hydrography/global/streams.pmtiles
 """
 
 import argparse
@@ -92,26 +101,41 @@ def link(target: Path, path: Path) -> None:
     path.symlink_to(target.resolve())
 
 
+def serve_region(region_dir: Path) -> tuple[Path, Path, Path, pd.DataFrame]:
+    """Link a region's routing parameters into ``data`` and write its grid weights there as parquet. Returns the served
+    routing parameters, the grid weights netCDF and its served parquet, and the weights."""
+    weights_netcdf = next(region_dir.glob('gridweights_*.nc'))
+    served_region = DATA / 'hydrography' / region_dir.name
+    served_params = served_region / 'routing.parquet'
+    served_weights = served_region / f'{weights_netcdf.stem}.parquet'
+    link(region_dir / 'routing.parquet', served_params)
+    return served_params, weights_netcdf, served_weights, grid_weights_to_parquet(weights_netcdf, served_weights)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--region-dir', type=Path, required=True, help='hydrography folder with routing.parquet')
     parser.add_argument('--runoff', type=Path, required=True, help='gridded runoff zarr store')
     parser.add_argument('--variable', default='ro', help='runoff variable in the zarr store')
     parser.add_argument('--rivers', type=int, nargs='*', default=[], help='test rivers besides the main outlet')
+    parser.add_argument('--page-region-dirs', type=Path, nargs='*', default=[], help='more regions for the page')
+    parser.add_argument('--more-runoff', type=Path, nargs='*', default=[], help='more runoff stores for the page')
+    parser.add_argument('--streams', type=Path, help="PMTiles of the streams the page's map draws")
     args = parser.parse_args()
 
     region_dir, runoff = args.region_dir.expanduser(), args.runoff.expanduser()
-    weights_netcdf = next(region_dir.glob('gridweights_*.nc'))
-    served_region = DATA / 'hydrography' / region_dir.name
+    more_runoff = [path.expanduser() for path in args.more_runoff]
     served_runoff = DATA / 'runoff' / runoff.name
-    served_params = served_region / 'routing.parquet'
-    served_weights = served_region / f'{weights_netcdf.stem}.parquet'
     expected_dir = DATA / 'expected'
     expected_dir.mkdir(parents=True, exist_ok=True)
 
-    link(region_dir / 'routing.parquet', served_params)
-    link(runoff, served_runoff)
-    weights = grid_weights_to_parquet(weights_netcdf, served_weights)
+    for page_region_dir in {path.expanduser().resolve() for path in args.page_region_dirs} - {region_dir.resolve()}:
+        serve_region(page_region_dir)
+    for store in [runoff, *more_runoff]:
+        link(store, DATA / 'runoff' / store.name)
+    if args.streams is not None:
+        link(args.streams.expanduser(), DATA / 'hydrography' / args.streams.name)
+    served_params, weights_netcdf, served_weights, weights = serve_region(region_dir)
     outlet = main_outlet(rr.Network(served_params), weights)
     river_ids = [outlet, *[river for river in args.rivers if river != outlet]]
     dates, discharge = route_hydrographs(
@@ -124,6 +148,7 @@ def main() -> None:
         'routing_parameters': served_params.relative_to(DATA).as_posix(),
         'grid_weights': served_weights.relative_to(DATA).as_posix(),
         'runoff': f'{served_runoff.relative_to(DATA).as_posix()}/{args.variable}',
+        'more_runoff': [f'runoff/{store.name}/{args.variable}' for store in more_runoff],
         'outlet_river_id': outlet,
         'dates': dates.tolist(),
         'hydrographs': {

@@ -1,0 +1,163 @@
+/* ── The page's own styles · the panel's sections, the player, the legend's ramp, the chart ─────────────── */
+
+/* A section heading outranks the labels of the controls inside it: larger, and in the full text color. */
+#scroll section h2 {
+    font-size: var(--fs-lg);
+    letter-spacing: 1px;
+    color: var(--text);
+    text-align: center;
+}
+
+#panel section {
+    margin: 15px 18px;
+}
+
+#panel section > * + *, #period-form > * + * {
+    margin-top: 12px;
+}
+
+/* the button rows sit centred in the column rather than hugging its left edge */
+#panel section .row.actions {
+    justify-content: center;
+}
+
+#scroll hr {
+    border: none;
+    height: 2px;
+    width: 90%;
+    margin: 0 auto;
+    background: var(--rule);
+}
+
+/* ── The player · over the map along the bottom, translucent until there is a period to play ── */
+.player {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.player .col {
+    --gap: 6px;
+}
+
+.player .time, .player .step {
+    font-family: var(--mono), monospace;
+}
+
+.player .time {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.player .step {
+    font-size: 13px;
+    color: var(--text-dim);
+    flex: 0 0 auto;
+}
+
+.player .speed {
+    flex: 0 0 auto;
+    align-items: center;
+    --gap: 3px;
+}
+
+.player .speed label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: .12em;
+}
+
+.player .speed select {
+    font-family: var(--mono), monospace;
+    font-size: 14px;
+    padding: 5px 6px;
+}
+
+#player {
+    left: calc(var(--panel-w) + (100vw - var(--panel-w)) / 2);
+    transform: translateX(-50%);
+    bottom: 22px;
+    width: min(720px, calc(100vw - var(--panel-w) - 520px));
+    min-width: 360px;
+    padding: 13px 18px;
+    opacity: .35;
+    pointer-events: none;
+    transition: opacity .3s;
+}
+
+#player.ready {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* how far through the period the player is, a sliver along the card's top edge */
+#progress-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 2px;
+    width: 0;
+    background: linear-gradient(90deg, var(--accent), #22d3ee);
+    border-radius: var(--r-lg) 0 0 0;
+}
+
+/* ── The legend's discharge ramp, colored by src/map.js with the map's own colors ── */
+#discharge-legend {
+    margin-top: 12px;
+}
+
+#legend-ramp {
+    height: 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+}
+
+#discharge-legend .ticks {
+    margin-top: 5px;
+    font-family: var(--mono), monospace;
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+}
+
+/* ── The outlet's hydrograph ── */
+#hydrograph {
+    position: relative;
+}
+
+#hydrograph svg {
+    display: block;
+    width: 100%;
+    overflow: visible;
+}
+
+#hydrograph svg:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+    border-radius: var(--r-sm);
+}
+
+.tooltip {
+    position: absolute;
+    pointer-events: none;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface2);
+    box-shadow: 0 2px 8px rgba(var(--shadow-color), .4);
+    font-size: var(--fs-md);
+    white-space: nowrap;
+}
+
+.tooltip strong {
+    display: block;
+    font-size: var(--fs-lg);
+    font-variant-numeric: tabular-nums;
+}
+
+.tooltip span {
+    color: var(--text-dim);
+}

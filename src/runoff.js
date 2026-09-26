@@ -1,6 +1,7 @@
 /**
- * Gridded runoff read from a (time, y, x) zarr array over HTTP: the array's time steps, and the series of the grid
- * cells a river network needs, read chunk by chunk in this thread or in a pool of workers.
+ * Gridded runoff read from (time, y, x) zarr arrays over HTTP, one after another in time, such as a store per year: the
+ * time steps of a period, and the series of the grid cells a river network needs over it, read chunk by chunk in this
+ * thread or in a pool of workers.
  */
 import * as zarr from 'zarrita'
 
@@ -15,8 +16,60 @@ const CF_REFERENCE_TIME = /^(\d{1,4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,
 const METERS_PER_DEPTH_UNIT = new Map([['m', 1], ['meters', 1], ['kg m-2', 1], ['mm', 0.001], ['millimeters', 0.001]])
 const STEPS_COPIED_TOGETHER = 64 // a tile of every cell's steps copied at once keeps the chunk rows read in cache
 
-/** Open a runoff array and read its time steps, from the coordinate array named by its first dimension. */
-export async function openRunoff(arrayUrl) {
+/**
+ * Open the runoff arrays ``arrayUrls``, consecutive stretches of time on one grid, such as a store per year, and keep
+ * the steps from ``period.start`` up to but not including ``period.stop``, in seconds since 1970, or every step when
+ * there is no period. Each array must go on from the step after the one before ends, in the same step and units. The
+ * runoff's ``array`` is its first array, whose grid and chunks across it every array shares.
+ */
+export async function openRunoff(arrayUrls, period) {
+  if (!Array.isArray(arrayUrls) || arrayUrls.length === 0) throw new Error('the runoff needs at least one array url')
+  const { start, stop } = period ?? { start: -Infinity, stop: Infinity }
+  if (period !== undefined && !(Number.isFinite(start) && Number.isFinite(stop) && start < stop)) {
+    throw new Error(`a period must start before it stops, in seconds since 1970, not from ${start} to ${stop}`)
+  }
+  const arrays = await Promise.all(arrayUrls.map(openRunoffArray))
+  arrays.slice(1).forEach((runoff, index) => checkContinues(arrays[index], runoff))
+  const kept = arrays.map(runoff => {
+    const firstStep = countTimesBefore(runoff.times, start)
+    return { ...runoff, firstStep, nSteps: countTimesBefore(runoff.times, stop) - firstStep }
+  }).filter(runoff => runoff.nSteps > 0)
+  if (kept.length === 0) {
+    const [from, to] = [start, stop].map(time => new Date(time * 1000).toISOString())
+    throw new Error(`${arrayUrls.join(', ')} have no runoff from ${from} up to ${to}`)
+  }
+  const times = new Float64Array(kept.reduce((total, runoff) => total + runoff.nSteps, 0))
+  let periodStep = 0
+  const parts = kept.map(({ url, array, times: arrayTimes, firstStep, nSteps }) => {
+    times.set(arrayTimes.subarray(firstStep, firstStep + nSteps), periodStep)
+    periodStep += nSteps
+    return { url, array, firstStep, nSteps, periodStep: periodStep - nSteps } // periodStep: its first step's place
+  })
+  const [{ url, array, stepSeconds, metersPerUnit }] = arrays
+  return { url, array, parts, times, stepSeconds, metersPerUnit }
+}
+
+/** The count of increasing ``times`` before ``time``. */
+function countTimesBefore(times, time) {
+  let count = 0
+  while (count < times.length && times[count] < time) count++
+  return count
+}
+
+/** Whether runoff array ``next`` goes on from ``before``: the same grid and chunks across it, step, and units. */
+function checkContinues(before, next) {
+  const [grid, nextGrid] = [before, next].map(({ array }) => [...array.shape.slice(1), ...array.chunks.slice(1)].join())
+  if (grid !== nextGrid) throw new Error(`${next.url} is not on the grid and chunks of ${before.url}`)
+  if (next.stepSeconds !== before.stepSeconds || next.metersPerUnit !== before.metersPerUnit) {
+    throw new Error(`${next.url} does not have the time step and units of ${before.url}`)
+  }
+  if (next.times[0] !== before.times[before.times.length - 1] + before.stepSeconds) {
+    throw new Error(`${next.url} does not start the step after ${before.url} ends`)
+  }
+}
+
+/** Open one runoff array and read its time steps, from the coordinate array named by its first dimension. */
+async function openRunoffArray(arrayUrl) {
   const url = arrayUrl.replace(/\/+$/, '')
   const array = await openZarrArray(url)
   const timeName = array.dimensionNames?.[0]
@@ -85,8 +138,8 @@ function metersPerDepthUnit(array, url) {
 }
 
 /**
- * The runoff series of every cell as one C-order (cell, time) array, read chunk by chunk with ``readChunkCells``.
- * Cells must be grouped by chunk so that each chunk's cells fill consecutive rows.
+ * The runoff series of every cell over the period as one C-order (cell, time) array, read chunk by chunk with
+ * ``readChunkCells``. Cells must be grouped by chunk so that each chunk's cells fill consecutive rows.
  */
 export async function readRunoffCells(runoff, cellY, cellX, readChunkCells) {
   const nSteps = runoff.times.length
@@ -105,10 +158,12 @@ export async function readRunoffCells(runoff, cellY, cellX, readChunkCells) {
   return runoffByCell
 }
 
-/** One read per chunk and time chunk: the cells it holds, as positions within the chunk, and its steps. */
+/**
+ * One read per chunk of each array's time chunks the period covers: the cells it holds, as positions within the chunk,
+ * the first of its steps read and how many, and where they go in the period's series.
+ */
 function planChunkReads(runoff, cellY, cellX) {
-  const [chunkSteps, chunkHeight, chunkWidth] = runoff.array.chunks
-  const nSteps = runoff.times.length
+  const [, chunkHeight, chunkWidth] = runoff.array.chunks
   const chunkReads = []
   let firstCell = 0
   while (firstCell < cellY.length) {
@@ -121,11 +176,18 @@ function planChunkReads(runoff, cellY, cellX) {
     }
     const localY = cellY.subarray(firstCell, stopCell).map(y => y - chunkY * chunkHeight)
     const localX = cellX.subarray(firstCell, stopCell).map(x => x - chunkX * chunkWidth)
-    for (let firstStep = 0; firstStep < nSteps; firstStep += chunkSteps) {
-      const steps = Math.min(chunkSteps, nSteps - firstStep)
-      const chunkCoords = [firstStep / chunkSteps, chunkY, chunkX]
-      const task = { arrayUrl: runoff.url, chunkCoords, cellY: localY, cellX: localX, steps }
-      chunkReads.push({ firstCell, firstStep, task })
+    for (const part of runoff.parts) {
+      const [chunkSteps] = part.array.chunks
+      const stopStep = part.firstStep + part.nSteps
+      for (let chunkStart = part.firstStep - (part.firstStep % chunkSteps); chunkStart < stopStep;
+        chunkStart += chunkSteps) {
+        const [from, to] = [Math.max(part.firstStep, chunkStart), Math.min(stopStep, chunkStart + chunkSteps)]
+        const chunkCoords = [chunkStart / chunkSteps, chunkY, chunkX]
+        const task = {
+          arrayUrl: part.url, chunkCoords, cellY: localY, cellX: localX, firstStep: from - chunkStart, steps: to - from,
+        }
+        chunkReads.push({ firstCell, firstStep: part.periodStep + from - part.firstStep, task })
+      }
     }
     firstCell = stopCell
   }
@@ -133,17 +195,18 @@ function planChunkReads(runoff, cellY, cellX) {
 }
 
 /** Read one chunk of an open array and copy out the series of the cells a task names. */
-export async function readChunkCells(array, { chunkCoords, cellY, cellX, steps }) {
-  return copyCellSeriesFromChunk(await array.getChunk(chunkCoords), cellY, cellX, steps)
+export async function readChunkCells(array, { chunkCoords, cellY, cellX, firstStep, steps }) {
+  return copyCellSeriesFromChunk(await array.getChunk(chunkCoords), cellY, cellX, firstStep, steps)
 }
 
 /**
- * The first ``steps`` steps of each cell's series in a decoded (time, y, x) chunk, as C-order (cell, time) float32,
- * with NaN, such as ocean cells and missing chunks, replaced by zero so that routing never sees a NaN.
+ * The ``steps`` steps from ``firstStep`` of each cell's series in a decoded (time, y, x) chunk, as C-order (cell, time)
+ * float32, with NaN, such as ocean cells and missing chunks, replaced by zero so that routing never sees a NaN.
  */
-export function copyCellSeriesFromChunk({ data, shape, stride }, cellY, cellX, steps) {
-  if (data.length !== shape[0] * shape[1] * shape[2] || steps > shape[0] || cellY.length !== cellX.length) {
-    throw new Error(`a chunk of shape ${shape} cannot give ${steps} steps of ${cellY.length} cells`)
+export function copyCellSeriesFromChunk({ data, shape, stride }, cellY, cellX, firstStep, steps) {
+  const stepsFit = Number.isInteger(firstStep) && firstStep >= 0 && steps >= 1 && firstStep + steps <= shape[0]
+  if (data.length !== shape[0] * shape[1] * shape[2] || !stepsFit || cellY.length !== cellX.length) {
+    throw new Error(`a chunk of shape ${shape} cannot give ${steps} steps from ${firstStep} of ${cellY.length} cells`)
   }
   const [timeStride, yStride, xStride] = stride
   const series = new Float32Array(cellY.length * steps)
@@ -158,7 +221,7 @@ export function copyCellSeriesFromChunk({ data, shape, stride }, cellY, cellX, s
       const source = cellY[cell] * yStride + cellX[cell] * xStride
       const destination = cell * steps
       for (let step = tileStart; step < tileStop; step++) {
-        const value = data[source + step * timeStride]
+        const value = data[source + (firstStep + step) * timeStride]
         series[destination + step] = value === value ? value : 0
       }
     }

@@ -1,0 +1,99 @@
+/* ── Reset · page frame · type ─────────────────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+/* !important because the classes that lay a thing out set display themselves, and would otherwise outrank these */
+.hidden, [hidden] {
+    display: none !important;
+}
+
+/* The page is exactly the viewport and never scrolls: the control column, then the map filling the rest. */
+body {
+    height: 100vh;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+}
+
+#map {
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
+}
+
+/* ── Layout primitives · these and --gap lay out nearly everything ── */
+.row {
+    display: flex;
+    align-items: center;
+    gap: var(--gap);
+}
+
+.col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+}
+
+.between {
+    justify-content: space-between;
+}
+
+.grow {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* ── Type · the page title, one small uppercase heading for everything below it, then a dialog's title ── */
+h1 {
+    font-family: var(--sans), sans-serif;
+    font-size: var(--fs-xl);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -.015em;
+    color: var(--accent);
+}
+
+h2 {
+    font-family: var(--sans), sans-serif;
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: .12em;
+}
+
+h3 {
+    flex: 0 0 auto;
+    font-family: var(--sans), sans-serif;
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    letter-spacing: -.015em;
+    color: var(--accent);
+}
+
+/* what went wrong, in the danger color, where it went wrong */
+.error {
+    font-size: var(--fs-md);
+    line-height: 1.5;
+    color: var(--danger-text);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+#scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+    }
+}

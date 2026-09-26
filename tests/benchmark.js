@@ -1,8 +1,8 @@
 /**
  * Time each stage of routing the test data in each order, in this thread and with pools of workers on node's worker
- * threads, which run the same V8 as a Chromium page's workers, and then each routing kernel alone on the network of each
- * main outlet: river-first, time-step-first, handing every river's discharge to a callback after each step, and in
- * windows of --windows steps, handing every river's discharge in each window. Each is run once to warm up, which is
+ * threads, which run the same V8 as a Chromium page's workers, and then each routing kernel alone on the network of
+ * each main outlet: river-first, time-step-first, handing every river's discharge to a callback after each step, and
+ * in windows of --windows steps, handing every river's discharge in each window. Each is run once to warm up, which is
  * reported as the first, and then --repeats times, averaged.
  *
  *     node tests/benchmark.js --workers 1,4,8 --orders river,time --windows 32,256 --repeats 2
@@ -73,7 +73,7 @@ for (const name of readdirSync(expectedDirectory).filter(file => file.endsWith('
   const inputs = {
     routingParametersUrl: new URL(expected.routing_parameters, dataUrl).href,
     gridWeightsUrl: new URL(expected.grid_weights, dataUrl).href,
-    runoffUrl: new URL(expected.runoff, dataUrl).href,
+    runoffUrls: [new URL(expected.runoff, dataUrl).href],
   }
   for (const riverId of Object.keys(expected.hydrographs).map(Number)) {
     for (const poolSize of poolSizes) {

@@ -29,6 +29,10 @@ enum {
     STEPS_PER_BLOCK = 8,  /* the steps routed per pass of the routing loop: two vectors of four */
     STEPS_PER_LATERAL_BLOCK = 32, /* the steps whose runoff forcing time-step-first routing sums at once */
     ROW_HEADER = 4,       /* the floats before an inflow row's first step, which keep its steps aligned */
+    FLOAT_MANTISSA_BITS = 23, /* a float's bits: 23 of mantissa below 8 of exponent, biased by 127 */
+    FLOAT_EXPONENT_BIAS = 127,
+    FLOAT_MANTISSA = 8388607, /* the bits of a float's mantissa, 2^23 - 1 */
+    FLOAT_ONE = 1065353216,   /* the bits of 1.0F: a float from 1 up to 2 has these exponent bits */
 };
 
 enum {
@@ -45,6 +49,7 @@ enum {
     PROBLEM_LEVELS = -10,
     PROBLEM_WINDOW = -11,
     PROBLEM_WINDOW_UNFINISHED = -12,
+    PROBLEM_CLASSES = -13,
 };
 
 /* The arrays of a network in routing order, as start_routing is given them. */
@@ -154,6 +159,8 @@ int start_stepping(struct stepping *stepping, int n_rivers, int n_levels, int n_
                    int *scratch_ints);
 int route_next_steps(struct stepping *stepping, int n_steps);
 int copy_in_routing_order(const struct stepping *stepping, const int *level_positions, float *discharge);
+int classify_in_routing_order(const struct stepping *stepping, const int *level_positions, float lowest,
+                              float classes_per_tenfold, float top_class, float *class_values);
 
 /*
  * The steps every series is padded to: n_steps rounded up to a whole number of the blocks time-step-first routing sums
@@ -190,6 +197,7 @@ const char *describe_problem(int problem) {
     case PROBLEM_LEVELS: return "the levels do not cover the rivers in order, or a river drains into its own level";
     case PROBLEM_WINDOW: return "a window is not a whole number of blocks of 8 steps";
     case PROBLEM_WINDOW_UNFINISHED: return "a window has rivers left to route";
+    case PROBLEM_CLASSES: return "discharge classes need a lowest discharge, classes a tenfold, and a top class above 0";
     default: return "an unknown problem";
     }
 }
@@ -937,6 +945,60 @@ int copy_in_routing_order(const struct stepping *stepping, const int *level_posi
             return PROBLEM_SIZES;
         }
         discharge[river] = stepping->discharge[position];
+    }
+    return OK;
+}
+
+/*
+ * The base 2 logarithm of four positive floats, none subnormal: each one's exponent, plus the logarithm of its mantissa,
+ * from 1 up to 2, by a quadratic through log2(1) = 0 and log2(2) = 1 that is off by at most 0.0077.
+ */
+static inline v128_t log2_of_four(v128_t values) {
+    const float squared = -0.34655F;
+    const float linear = 2.03965F;
+    const float constant = -1.6931F;
+    const v128_t exponents = wasm_i32x4_sub(wasm_u32x4_shr(values, FLOAT_MANTISSA_BITS),
+                                            wasm_i32x4_splat(FLOAT_EXPONENT_BIAS));
+    const v128_t mantissas = wasm_v128_or(wasm_v128_and(values, wasm_i32x4_splat(FLOAT_MANTISSA)),
+                                          wasm_i32x4_splat(FLOAT_ONE));
+    const v128_t quadratic = multiply_add(multiply_add(wasm_f32x4_splat(squared), mantissas, wasm_f32x4_splat(linear)),
+                                          mantissas, wasm_f32x4_splat(constant));
+    return wasm_f32x4_add(wasm_f32x4_convert_i32x4(exponents), quadratic);
+}
+
+/*
+ * Write every river's discharge class after the last step routed into class_values, in routing order, from level order
+ * as copy_in_routing_order copies discharge: classes_per_tenfold classes to each tenfold of discharge above lowest, from
+ * 0 at lowest and below up to top_class, left unrounded so that a caller can keep a margin between classes. Each is
+ * off by at most 0.0077 log10(2) classes_per_tenfold, twice the error of log2_of_four. class_values holds n_rivers
+ * rounded up to a whole number of vectors. Returns OK or a problem.
+ */
+int classify_in_routing_order(const struct stepping *stepping, const int *level_positions, float lowest,
+                              float classes_per_tenfold, float top_class, float *class_values) {
+    if (stepping == 0 || level_positions == 0 || class_values == 0) {
+        return PROBLEM_MISSING_ARRAY;
+    }
+    if (!(lowest > 0.0F) || !(classes_per_tenfold > 0.0F) || !(top_class > 0.0F)) {
+        return PROBLEM_CLASSES;
+    }
+    const float log10_of_2 = 0.30103F;
+    const int n_rivers = stepping->network.n_rivers;
+    const v128_t lowest_everywhere = wasm_f32x4_splat(lowest);
+    const v128_t scale = wasm_f32x4_splat(log10_of_2 * classes_per_tenfold);
+    const v128_t offset = wasm_f32x4_mul(log2_of_four(lowest_everywhere), wasm_f32x4_neg(scale));
+    for (int river = 0; river < n_rivers; river += 4) {
+        float discharge[4] = {lowest, lowest, lowest, lowest}; /* past the last river, lowest */
+        for (int lane = 0; lane < 4 && river + lane < n_rivers; lane++) {
+            const int position = level_positions[river + lane];
+            if (position < 0 || position >= n_rivers) {
+                return PROBLEM_SIZES;
+            }
+            discharge[lane] = stepping->discharge[position];
+        }
+        const v128_t above_lowest = wasm_f32x4_max(wasm_v128_load(discharge), lowest_everywhere);
+        const v128_t classes = multiply_add(log2_of_four(above_lowest), scale, offset);
+        wasm_v128_store(class_values + river,
+                        wasm_f32x4_min(wasm_f32x4_max(classes, wasm_f32x4_splat(0.0F)), wasm_f32x4_splat(top_class)));
     }
     return OK;
 }
