@@ -186,6 +186,18 @@ export function readColors() {
   return colors
 }
 
+/**
+ * The url of the streams archive the data sources choose: their streams source, ``streams``, with the archive
+ * ``streamsArchive`` in place of its {streams}. The archives hold the same streams, shown from different zooms.
+ */
+export function streamsUrl({ streams, streamsArchive }) {
+  if (!streams.includes('{streams}')) {
+    throw new Error(`the streams source ${streams} must name the archive by {streams}`)
+  }
+  if (typeof streamsArchive !== 'string' || streamsArchive === '') throw new Error('no streams archive is chosen')
+  return streams.replaceAll('{streams}', streamsArchive)
+}
+
 /** The streams source of the PMTiles archive at ``url``, each line's id its riverId, and the network's layer. */
 export function addStreamsSource(map, protocol, url, colors) {
   protocol.add(new PMTiles(url))

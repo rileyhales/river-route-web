@@ -10,7 +10,7 @@ import './styles/components.css'
 import './styles/app.css'
 import './styles/live.css'
 import { createGrid, createLiveMap } from './live-map.js'
-import { DISCHARGE_CLASSES, dischargeGradient } from './map.js'
+import { DISCHARGE_CLASSES, dischargeGradient, streamsUrl } from './map.js'
 import { readGridCoordinates } from './runoff.js'
 
 const COUNT = new Intl.NumberFormat('en-US')
@@ -111,9 +111,8 @@ worker.onmessage = ({ data }) => {
 worker.onerror = event => showError(`the live worker failed: ${event.message || 'it did not load'}`)
 
 try {
-  const { grid: gridUrl, streams } = readSources()
-  const grid = createGrid(await readGridCoordinates(absoluteUrl(gridUrl)))
-  liveMap = await createLiveMap('map', absoluteUrl(streams), grid, {
+  const grid = createGrid(await readGridCoordinates(absoluteUrl(readSources().grid)))
+  liveMap = await createLiveMap('map', absoluteUrl(streamsUrl(readSources())), grid, {
     onStroke: stroke,
     onError: error => showError(error.message),
   })
@@ -201,7 +200,7 @@ document.addEventListener('keydown', event => {
 })
 sourcesForm.addEventListener('submit', event => event.preventDefault())
 sourcesForm.addEventListener('change', event => {
-  if (event.target.name === 'grid' || event.target.name === 'streams') {
+  if (['grid', 'streams', 'streamsArchive'].includes(event.target.name)) {
     location.search = new URLSearchParams(readSources()).toString()
   }
 })

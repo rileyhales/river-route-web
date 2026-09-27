@@ -3,7 +3,7 @@ Prepare the data the jsrr tests and page read over HTTP from the dev server, in 
 
     hydrography/region=<id>/routing.parquet                  a link to the region's routing parameters, read in place
     hydrography/region=<id>/gridweights_<grid>_<id>.parquet  the region's grid weights, converted from netCDF to parquet
-    hydrography/<streams>.pmtiles                            a link to the streams the page's map draws, read in place
+    hydrography/<streams>.pmtiles                            a link to each streams archive the page's map draws
     runoff/<store>.zarr                                      a link to each runoff zarr store, read in place
     expected/region=<id>_<store>.json                        the hydrographs river-route routes for the test rivers,
                                                              and the runoff stores linked beside the routed one
@@ -22,7 +22,7 @@ The page routes whichever region holds the river clicked on its map, from any ru
 
         --page-region-dirs ~/data/v3TestData/hydrography/region=* \
         --more-runoff ~/data/era5_zarr_16x16_yearly/year=194[1-9]/era5_194[1-9].zarr \
-        --streams ~/data/v3TestData/hydrography/global/streams.pmtiles
+        --streams ~/data/v3TestData/hydrography/global/streams*.pmtiles
 """
 
 import argparse
@@ -120,7 +120,7 @@ def main() -> None:
     parser.add_argument('--rivers', type=int, nargs='*', default=[], help='test rivers besides the main outlet')
     parser.add_argument('--page-region-dirs', type=Path, nargs='*', default=[], help='more regions for the page')
     parser.add_argument('--more-runoff', type=Path, nargs='*', default=[], help='more runoff stores for the page')
-    parser.add_argument('--streams', type=Path, help="PMTiles of the streams the page's map draws")
+    parser.add_argument('--streams', type=Path, nargs='*', default=[], help="streams archives the page's map draws")
     args = parser.parse_args()
 
     region_dir, runoff = args.region_dir.expanduser(), args.runoff.expanduser()
@@ -133,8 +133,8 @@ def main() -> None:
         serve_region(page_region_dir)
     for store in [runoff, *more_runoff]:
         link(store, DATA / 'runoff' / store.name)
-    if args.streams is not None:
-        link(args.streams.expanduser(), DATA / 'hydrography' / args.streams.name)
+    for streams in args.streams:
+        link(streams.expanduser(), DATA / 'hydrography' / streams.name)
     served_params, weights_netcdf, served_weights, weights = serve_region(region_dir)
     outlet = main_outlet(rr.Network(served_params), weights)
     river_ids = [outlet, *[river for river in args.rivers if river != outlet]]

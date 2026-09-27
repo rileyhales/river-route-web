@@ -8,7 +8,7 @@ import './styles/base.css'
 import './styles/components.css'
 import './styles/app.css'
 import { createHydrographChart } from './hydrograph.js'
-import { createRiverMap, DISCHARGE_CLASSES, dischargeGradient, readReach } from './map.js'
+import { createRiverMap, DISCHARGE_CLASSES, dischargeGradient, readReach, streamsUrl } from './map.js'
 import { startTimeSteps } from './muskingum-wasm.js'
 import { createPlayer } from './player.js'
 
@@ -22,7 +22,7 @@ const routeWorker = new Worker(new URL('./route-worker.js', import.meta.url), { 
 let studyArea // the reach clicked, as readReach reads it
 let routing // the study area and period the worker is routing, until it answers
 
-const riverMap = await createRiverMap('map', absoluteUrl(readSources().streams), {
+const riverMap = await createRiverMap('map', absoluteUrl(streamsUrl(readSources())), {
   onStreamClicked(properties) {
     try {
       selectStudyArea(readReach(properties))
@@ -40,8 +40,8 @@ $('legend-ramp').style.background = dischargeGradient()
 boundPeriod()
 
 /**
- * The data sources form: the url of each input, where {region} stands for the study area's region and {year} for each
- * year of the period, and the first and last years of runoff.
+ * The data sources form: the url of each input, where {region} stands for the study area's region, {year} for each
+ * year of the period, and {streams} for the streams archive chosen, and the first and last years of runoff.
  */
 function readSources() {
   const sources = Object.fromEntries(new FormData(sourcesForm))
@@ -165,10 +165,10 @@ document.addEventListener('keydown', event => {
 sourcesForm.addEventListener('submit', event => event.preventDefault())
 sourcesForm.addEventListener('change', event => {
   if (event.target.name === 'firstYear' || event.target.name === 'lastYear') boundPeriod()
-  if (event.target.name !== 'streams') return
+  if (event.target.name !== 'streams' && event.target.name !== 'streamsArchive') return
   selectStudyArea(undefined)
   try {
-    riverMap.setStreams(absoluteUrl(readSources().streams))
+    riverMap.setStreams(absoluteUrl(streamsUrl(readSources())))
   } catch (error) {
     showError(error.message)
   }

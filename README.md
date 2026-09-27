@@ -17,11 +17,12 @@ reset button in the panel's header clears the study area and its route, keeping 
 | Streams            | PMTiles of the streams, with `riverId`, `riverIndex`, `upstreamCount`, and `TDXHydroRegion`    |
 
 The data sources dialog, the cog in the panel's header, names each input by a url, in which `{region}` stands for the
-study area's region and `{year}` for each year of the period. Runoff is read one zarr a year, so its url must name
-`{year}`, and each year's array must hold only that year and go on from the step after the last year's ends, on the
-same grid. Its time coordinate is the array named by its first dimension, beside it in the store; its steps must be
-uniform, and its units attribute one river-route reads (m, mm, kg m-2), or absent for meters. Only the chunks holding
-the cells of the routed catchments are read.
+study area's region, `{year}` for each year of the period, and `{streams}` for the streams archive its Stream density
+chooses: `streams_thinner`, `streams`, or `streams_denser`, the same streams in the same folder, shown thinner or denser
+at each zoom. Runoff is read one zarr a year, so its url must name `{year}`, and each year's array must hold only that
+year and go on from the step after the last year's ends, on the same grid. Its time coordinate is the array named by
+its first dimension, beside it in the store; its steps must be uniform, and its units attribute one river-route reads
+(m, mm, kg m-2), or absent for meters. Only the chunks holding the cells of the routed catchments are read.
 
 ## Running
 
@@ -51,14 +52,14 @@ The dev server serves `data/` at `/data/` as plain files, following links, which
     --rivers 720184033 \
     --page-region-dirs ~/data/v3TestData/hydrography/region=* \
     --more-runoff ~/data/era5_zarr_16x16_yearly/year=194[1-9]/era5_194[1-9].zarr \
-    --streams ~/data/v3TestData/hydrography/global/streams.pmtiles
+    --streams ~/data/v3TestData/hydrography/global/streams*.pmtiles
 ```
 
 It links the region's `routing.parquet` and the runoff store, writes the grid weights as parquet with
 `grid_weights_to_parquet`, and routes the region with river-route to record the hydrographs of the main outlet and of
 each river in `--rivers`, which the tests reproduce. The last three arguments serve the page: every region a click may
-pick, linked and converted the same way, the runoff of the years after, which a test also reads, and the streams. The
-dev server answers a request for a byte range of a file, as the PMTiles reader asks.
+pick, linked and converted the same way, the runoff of the years after, which a test also reads, and the streams
+archives. The dev server answers a request for a byte range of a file, as the PMTiles reader asks.
 
 ## How it routes
 

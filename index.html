@@ -159,6 +159,14 @@
         <label for="source-streams">Streams</label>
         <input id="source-streams" name="streams" required spellcheck="false" value="%VITE_STREAMS%"/>
       </div>
+      <div class="field">
+        <label for="source-streams-archive">Stream density</label>
+        <select id="source-streams-archive" name="streamsArchive">
+          <option value="streams_thinner">Thinner</option>
+          <option value="streams" selected>Standard</option>
+          <option value="streams_denser">Denser</option>
+        </select>
+      </div>
     </form>
   </div>
 </div>
