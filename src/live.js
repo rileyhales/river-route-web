@@ -15,6 +15,7 @@ import { readGridCoordinates } from './runoff.js'
 
 const COUNT = new Intl.NumberFormat('en-US')
 const HOURS_A_SECOND_AT_1X = 24 // the simulation's hours a second at a speed of 1×
+const MILLIMETERS_AN_INCH = 25.4
 const TIMING_SECONDS = 1 // the map updates the timings average, those of this last many seconds
 const TIMING_SHOWN_EVERY = 250 // milliseconds, how often the timings shown are updated, slowly enough to be read
 // each stage of a map update, the row it is shown in, and what it is timed as
@@ -158,7 +159,8 @@ for (const button of document.querySelectorAll('#tools [data-tool]')) {
 }
 $('show-grid').addEventListener('change', () => liveMap?.setGridShown($('show-grid').checked))
 $('brush-depth').addEventListener('input', () => {
-  $('brush-depth-value').textContent = `${$('brush-depth').valueAsNumber} mm/hr`
+  const depth = $('brush-depth').valueAsNumber
+  $('brush-depth-value').textContent = `${depth} mm/hr ≈ ${(depth / MILLIMETERS_AN_INCH).toFixed(2)} in/hr`
 })
 $('brush-radius').addEventListener('input', () => {
   const radius = $('brush-radius').valueAsNumber

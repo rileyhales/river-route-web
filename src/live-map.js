@@ -113,6 +113,7 @@ export async function createLiveMap(container, streamsUrl, grid, { onStroke, onE
   addLiveLayers(map)
   const discharge = drawDischargeOn(map, 'live-discharge', onError)
   const brush = paintWithBrush(map, grid, onStroke)
+  panWithMiddleButton(map)
   let gridShown = false // the grid's lines, off unless asked for
   const showGrid = () => map.getSource('grid-lines').setData(gridShown && grid.cellPixels(map) >= GRID_CELL_PIXELS
     ? grid.linesInView(map) : EMPTY)
@@ -171,6 +172,29 @@ function addLiveLayers(map) {
     'line-width': STREAM_ORDER_WIDTH,
     'line-opacity': 0.95,
   }, NO_REGION))
+}
+
+/**
+ * A drag with the middle button held moves the map, whatever the tool, so that the brush can paint and the map move
+ * without changing tools.
+ */
+function panWithMiddleButton(map) {
+  const MIDDLE_BUTTON = 1
+  let heldAt // where the pointer is, in the page, while the middle button is held down over the map
+
+  map.getCanvasContainer().addEventListener('mousedown', event => {
+    if (event.button !== MIDDLE_BUTTON) return
+    event.preventDefault() // no autoscroll
+    heldAt = { x: event.clientX, y: event.clientY }
+  })
+  window.addEventListener('mousemove', event => {
+    if (heldAt === undefined) return
+    map.panBy([heldAt.x - event.clientX, heldAt.y - event.clientY], { animate: false })
+    heldAt = { x: event.clientX, y: event.clientY }
+  })
+  window.addEventListener('mouseup', event => {
+    if (event.button === MIDDLE_BUTTON) heldAt = undefined
+  })
 }
 
 /**
