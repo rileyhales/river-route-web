@@ -29,7 +29,7 @@ its first dimension, beside it in the store; its steps must be uniform, and its 
 ```bash
 npm install
 npm run dev        # the pages, with the test data at /data/, at the address vite prints, and /live.html
-npm run build      # the pages in dist/, to deploy at /webroute/, reading their data from the CDNs
+npm run build      # the pages in dist/, to deploy at /webroute/, reading the data sources of .env
 npm run preview    # serves dist/ at /webroute/ of the address vite prints, as it is deployed
 npm test           # starts its own server, routes the test data, and compares with river-route
 npm run benchmark  # times each stage in both orders, in one thread and with pools of workers, and each kernel alone
@@ -39,8 +39,9 @@ Each of these first builds the routing kernel from C with `npm run wasm`, which 
 (or `LLVM_BIN` and `LLD_BIN` naming other folders of clang and wasm-ld).
 
 The data sources each page starts with come from `.env`, which a build reads: each region's routing parameters and grid
-weights and the streams from the hydrography's CloudFront, and the runoff from `cdn.apps.geoglows.org`. The dev server
-reads `.env.development` instead, which names the `data/` it serves.
+weights and the streams from the hydrography's CloudFront, and the runoff from `v3.s3.riverforecastsystem.com`, whose
+years from 1940 to 2024 bound the period. The dev server reads `.env.development` instead, which names the `data/` it
+serves and its years of runoff, 1940 to 1949.
 
 The dev server serves `data/` at `/data/` as plain files, following links, which is how the inputs are read in place.
 `tests/prepare_test_data.py` fills it, run from this folder with the python environment of river-route beside it:
