@@ -14,7 +14,7 @@ const THREE_DIGITS = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 
 
 /** Discharge rounded to show: whole cubic meters per second from 100 up, and three significant digits below. */
 const formatNumber = value => (Math.abs(value) >= 100 ? WHOLE_NUMBER : THREE_DIGITS).format(value)
-const formatDischarge = value => `${formatNumber(value)} m³/s`
+export const formatDischarge = value => `${formatNumber(value)} m³/s`
 
 /** A chart in ``figure`` that draws each hydrograph it is given, redrawn to fit whenever the figure resizes. */
 export function createHydrographChart(figure) {
@@ -76,7 +76,7 @@ export function createHydrographChart(figure) {
   }
 }
 
-function svgElement(parent, name, attributes, text) {
+export function svgElement(parent, name, attributes, text) {
   const element = document.createElementNS(SVG_NAMESPACE, name)
   for (const [attribute, value] of Object.entries(attributes)) element.setAttribute(attribute, value)
   if (text !== undefined) element.textContent = text
@@ -97,7 +97,7 @@ function drawChart(svg, { times, discharge }, width) {
   const x = step => MARGIN.left + (last > 0 ? step / last : 0) * plotWidth
   const y = value => MARGIN.top + PLOT_HEIGHT * (1 - value / top)
   const xOfTime = time => x((time - times[0]) / (times[1] - times[0]))
-  drawDischargeAxis(svg, ticks, y, width)
+  drawDischargeAxis(svg, ticks, y, width, MARGIN)
   drawTimeAxis(svg, monthTicks(times[0], times[last]), xOfTime)
   const points = Array.from(discharge, (value, step) => `${x(step).toFixed(1)},${y(value).toFixed(1)}`).join('L')
   const area = `M${x(0)},${y(0)}L${points}L${x(last)},${y(0)}Z`
@@ -115,7 +115,7 @@ function drawChart(svg, { times, discharge }, width) {
 }
 
 /** Round discharge ticks from zero to the first tick at or above the peak, about five of them. */
-function dischargeTicks(peak) {
+export function dischargeTicks(peak) {
   const rough = (peak > 0 ? peak : 1) / 5
   const magnitude = 10 ** Math.floor(Math.log10(rough))
   const step = [1, 2, 2.5, 5, 10].find(multiple => multiple * magnitude >= rough) * magnitude
@@ -123,15 +123,16 @@ function dischargeTicks(peak) {
   return { top, ticks: Array.from({ length: Math.round(top / step) + 1 }, (_, tick) => tick * step) }
 }
 
-function drawDischargeAxis(svg, ticks, y, width) {
+/** A gridline and a label at each of ``ticks``, across a chart ``width`` wide within ``margin``, and the unit above. */
+export function drawDischargeAxis(svg, ticks, y, width, margin) {
   const labelStyle = { fill: 'var(--text-faint)', 'font-size': 12, 'text-anchor': 'end' }
   for (const tick of ticks) {
     const color = tick === 0 ? 'var(--border)' : 'var(--border-soft)'
-    svgElement(svg, 'line', { x1: MARGIN.left, x2: width - MARGIN.right, y1: y(tick), y2: y(tick), stroke: color })
-    const label = { ...labelStyle, x: MARGIN.left - 8, y: y(tick), 'dominant-baseline': 'middle' }
+    svgElement(svg, 'line', { x1: margin.left, x2: width - margin.right, y1: y(tick), y2: y(tick), stroke: color })
+    const label = { ...labelStyle, x: margin.left - 8, y: y(tick), 'dominant-baseline': 'middle' }
     svgElement(svg, 'text', label, formatNumber(tick))
   }
-  svgElement(svg, 'text', { ...labelStyle, x: MARGIN.left - 8, y: MARGIN.top - 14 }, 'm³/s')
+  svgElement(svg, 'text', { ...labelStyle, x: margin.left - 8, y: margin.top - 14 }, 'm³/s')
 }
 
 /** Month starts from first to last, in seconds since 1970, every month or every few months to keep about 12. */

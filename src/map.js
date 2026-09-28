@@ -89,11 +89,11 @@ export async function createRiverMap(container, streamsUrl, { onStreamClicked, o
   const discharge = drawDischargeOn(map, 'study-area', onError)
   let studyArea // the reach shown as the study area
   map.on('click', event => {
-    const stream = nearestStream(map, event)
+    const stream = nearestStream(map, event, LAYERS)
     if (stream !== undefined) onStreamClicked(stream.properties)
   })
   map.on('mousemove', event => {
-    map.getCanvas().style.cursor = queryStreams(map, event.point).length > 0 ? 'pointer' : ''
+    map.getCanvas().style.cursor = queryStreams(map, event.point, LAYERS).length > 0 ? 'pointer' : ''
   })
   return {
     /** Draw ``reach``, as readReach reads it, as the study area, or none when it is undefined, and stop discharge. */
@@ -222,21 +222,22 @@ function addStreams(map, protocol, url, colors) {
   map.addLayer(streamLine('outlet', { 'line-color': colors.outlet, 'line-width': outletWidth }, NO_RIVER))
 }
 
-/** The rendered features of the streams' layers in a box of CLICK_PIXELS around ``point``. */
-function queryStreams(map, { x, y }) {
+/** The rendered features of the streams' ``layers`` in a box of CLICK_PIXELS around ``point``. */
+export function queryStreams(map, { x, y }, layers) {
   const box = [[x - CLICK_PIXELS, y - CLICK_PIXELS], [x + CLICK_PIXELS, y + CLICK_PIXELS]]
-  return map.queryRenderedFeatures(box, { layers: LAYERS })
+  return map.queryRenderedFeatures(box, { layers })
 }
 
 /**
- * The stream clicked: of those near the click, the one whose line passes closest to it, rather than whichever is drawn
- * on top, as webapp-rfs-v3's nearestFeature picks. Distances are compared in a plane scaled for the click's latitude.
+ * The stream clicked: of those of ``layers`` near the click, the one whose line passes closest to it, rather than
+ * whichever is drawn on top, as webapp-rfs-v3's nearestFeature picks. Distances are compared in a plane scaled for the
+ * click's latitude.
  */
-function nearestStream(map, { point, lngLat }) {
+export function nearestStream(map, { point, lngLat }, layers) {
   const scale = Math.cos((lngLat.lat * Math.PI) / 180)
   let nearest
   let nearestDistance = Infinity
-  for (const feature of queryStreams(map, point)) {
+  for (const feature of queryStreams(map, point, layers)) {
     const { type, coordinates } = feature.geometry
     const lines = type === 'LineString' ? [coordinates] : type === 'MultiLineString' ? coordinates : []
     const distance = Math.min(...lines.map(line => squaredDistanceToLine(line, lngLat, scale)))

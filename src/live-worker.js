@@ -4,7 +4,8 @@
  * which live-engine.js tells apart. The page's messages wait in a queue that each tick of the loop takes up first; its
  * answers are frames of each river's discharge class after the latest step, of which the page is only ever handed the
  * newest: the next waits until the page hands the last one's buffer back, so that frames never pile up behind a busy
- * page. Each frame carries the time spent making it since the last: taking up the queue, routing, and classing.
+ * page. Each frame carries the time spent making it since the last: taking up the queue, routing, and classing, and the
+ * history of each river the page gauges.
  */
 import { createLiveEngine } from './live-engine.js'
 import { prepareRegion } from './routing.js'
@@ -36,6 +37,10 @@ const TASKS = {
   },
   runoff({ cellKeys, depthMillimeters }) {
     engine.setRunoff(cellKeys, depthMillimeters / 1000)
+  },
+  gauges({ riverIds }) {
+    engine.setGauges(Array.from(riverIds))
+    frameDue = true
   },
   pulse({ underBrush, passedOver, depthMillimeters }) {
     engine.pulse(underBrush, passedOver, depthMillimeters / 1000)
@@ -124,7 +129,9 @@ function sendFrame() {
   const sentAt = performance.timeOrigin + performance.now() // in milliseconds since 1970, a clock the page shares
   const timings = { ...cycle, classesMs: performance.now() - started, sentAt }
   cycle = { queueMs: 0, routeMs: 0, hours: 0 }
-  self.postMessage({ kind: 'frame', stepsRouted: engine.stepsRouted(), classes: frame, timings }, [frame.buffer])
+  const gauges = engine.gaugeHistory()
+  const message = { kind: 'frame', stepsRouted: engine.stepsRouted(), classes: frame, gauges, timings }
+  self.postMessage(message, [frame.buffer, gauges.riverIds.buffer, gauges.history.buffer])
 }
 
 setInterval(tick, TICK_MILLISECONDS)

@@ -1,17 +1,20 @@
 /**
  * The live page's map, patterned after webapp-rfs-v3 as the period page's is: the streams, the grid of runoff cells,
  * which a circular brush paints runoff into or erases it from, the painted cells, and every river of the regions loaded
- * colored by its discharge wherever it holds water. The grid's lines are drawn, when asked for, once a cell is
- * GRID_CELL_PIXELS wide.
+ * colored by its discharge wherever it holds water, with each gauged river outlined in its gauge's color. The grid's
+ * lines are drawn, when asked for, once a cell is GRID_CELL_PIXELS wide.
  */
 import {
-  addStreamsSource, CLASS_COLOR, createBaseMap, DISCHARGE_CLASS, drawDischargeOn, readColors, STREAM_ORDER_WIDTH,
-  streamLine,
+  addStreamsSource, CLASS_COLOR, createBaseMap, DISCHARGE_CLASS, drawDischargeOn, nearestStream, queryStreams,
+  readColors, STREAM_ORDER_WIDTH, streamLine,
 } from './map.js'
 
 const GRID_CELL_PIXELS = 6 // the grid's lines are drawn only while a cell is at least this many pixels wide
 const MOST_GRID_LINES = 2000 // and while no more lines than this cross the view
 const NO_REGION = ['in', ['get', 'TDXHydroRegion'], ['literal', []]] // a filter no river passes
+const NO_RIVER = ['in', ['get', 'riverId'], ['literal', []]]
+const PAINTING_TOOLS = new Set(['pulse', 'source', 'erase'])
+const GAUGE_OUTLINE_PIXELS = 2.5
 const EMPTY = { type: 'FeatureCollection', features: [] }
 
 /**
@@ -103,16 +106,17 @@ export function createGrid({ latitudes, longitudes }) {
 
 /**
  * The live map in ``container``, of the streams of the PMTiles archive at ``streamsUrl`` and the cells of ``grid``, as
- * createGrid makes it. The brush's strokes go to ``onStroke``, as paintWithBrush gives them; what goes wrong goes to
- * ``onError``.
+ * createGrid makes it. The brush's strokes go to ``onStroke``, as paintWithBrush gives them; the tile properties of the
+ * stream nearest each click of the gauge tool go to ``onGaugeClicked``; what goes wrong goes to ``onError``.
  */
-export async function createLiveMap(container, streamsUrl, grid, { onStroke, onError }) {
+export async function createLiveMap(container, streamsUrl, grid, { onStroke, onGaugeClicked, onError }) {
   const { map, protocol } = await createBaseMap(container, onError)
   const colors = readColors()
   addStreamsSource(map, protocol, streamsUrl, colors)
   addLiveLayers(map)
   const discharge = drawDischargeOn(map, 'live-discharge', onError)
   const brush = paintWithBrush(map, grid, onStroke)
+  const gaugePicker = pickGauges(map, onGaugeClicked)
   panWithMiddleButton(map)
   let gridShown = false // the grid's lines, off unless asked for
   const showGrid = () => map.getSource('grid-lines').setData(gridShown && grid.cellPixels(map) >= GRID_CELL_PIXELS
@@ -124,9 +128,23 @@ export async function createLiveMap(container, streamsUrl, grid, { onStroke, onE
       gridShown = shown
       showGrid()
     },
-    /** Paint with ``tool``: 'pulse', 'source', 'erase', or 'pan', which moves the map instead. */
-    setTool: brush.setTool,
+    /**
+     * Paint with ``tool``: 'pulse', 'source', 'erase', or 'pan', which moves the map instead, or 'gauge', which moves
+     * it and picks the river clicked.
+     */
+    setTool(tool) {
+      brush.setTool(tool)
+      gaugePicker.setActive(tool === 'gauge')
+    },
     setBrushRadius: brush.setRadius,
+    /** Outline each of ``gauges``, a ``riverId`` and a ``color`` each, in its color. */
+    setGauges(gauges) {
+      const byRiver = gauges.flatMap(({ riverId, color }) => [riverId, color])
+      const riverIds = gauges.map(({ riverId }) => riverId)
+      map.setFilter('gauges', riverIds.length === 0 ? NO_RIVER : ['in', ['get', 'riverId'], ['literal', riverIds]])
+      map.setPaintProperty('gauges', 'line-color', byRiver.length === 0 ? 'rgba(0, 0, 0, 0)'
+        : ['match', ['get', 'riverId'], ...byRiver, 'rgba(0, 0, 0, 0)'])
+    },
     /** Draw ``painted``, each source cell's key and its runoff depth an hour, in millimeters. */
     showPainted(painted) {
       const features = Array.from(painted, ([key, depth]) => ({
@@ -153,7 +171,9 @@ export async function createLiveMap(container, streamsUrl, grid, { onStroke, onE
 
 /**
  * The grid's lines, the source cells, colored by their depth, and the discharge of the rivers of the regions loaded,
- * drawn only where a river holds more than the lowest class of discharge: over the network, under the discharge.
+ * drawn only where a river holds more than the lowest class of discharge: over the network, under the discharge. Over
+ * everything, the gauged rivers' outlines, drawn either side of a gap as wide as the river, so that its discharge shows
+ * through.
  */
 function addLiveLayers(map) {
   map.addSource('grid-lines', { type: 'geojson', data: EMPTY })
@@ -172,6 +192,33 @@ function addLiveLayers(map) {
     'line-width': STREAM_ORDER_WIDTH,
     'line-opacity': 0.95,
   }, NO_REGION))
+  map.addLayer(streamLine('gauges', {
+    'line-color': 'rgba(0, 0, 0, 0)',
+    'line-width': GAUGE_OUTLINE_PIXELS,
+    'line-gap-width': STREAM_ORDER_WIDTH,
+  }, NO_RIVER))
+}
+
+/**
+ * While active, a click hands the tile properties of the stream nearest it to ``onGaugeClicked``, and the pointer
+ * shows where a click would find one.
+ */
+function pickGauges(map, onGaugeClicked) {
+  let active = false
+  map.on('click', event => {
+    if (!active) return
+    const stream = nearestStream(map, event, ['streams'])
+    if (stream !== undefined) onGaugeClicked(stream.properties)
+  })
+  map.on('mousemove', event => {
+    if (active) map.getCanvas().style.cursor = queryStreams(map, event.point, ['streams']).length > 0 ? 'pointer' : ''
+  })
+  return {
+    setActive(nextActive) {
+      active = nextActive
+      if (!active) map.getCanvas().style.cursor = ''
+    },
+  }
 }
 
 /**
@@ -201,8 +248,8 @@ function panWithMiddleButton(map) {
  * The brush: a circle following the pointer over the map, which, while the tool pulses, places sources, or erases
  * them, turns the time the button is held into strokes: each frame, and once more as the button is let go, the tool,
  * the cells the brush passed over since the last, the cells under it, while it pulses and is held, and the regions of
- * the rivers it passed over go to ``onStroke``. A drag moves the map instead while the tool is 'pan', as it is to
- * start.
+ * the rivers it passed over go to ``onStroke``. A drag moves the map instead while the tool paints nothing, as 'pan'
+ * and 'gauge' do, and as it is to start.
  */
 function paintWithBrush(map, grid, onStroke) {
   const cursor = Object.assign(document.createElement('div'), { className: 'brush-cursor', hidden: true })
@@ -210,7 +257,7 @@ function paintWithBrush(map, grid, onStroke) {
   let [tool, radius] = ['pan', 40]
   let heldAt // where the pointer is, while its button is held down with a tool that paints
   let stroke = { cellKeys: new Set(), regions: new Set() } // passed over since the last frame
-  const canPaint = () => tool !== 'pan'
+  const canPaint = () => PAINTING_TOOLS.has(tool)
   const dragToPaint = () => {
     if (canPaint()) map.dragPan.disable()
     else map.dragPan.enable()

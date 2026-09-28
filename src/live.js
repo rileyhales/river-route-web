@@ -1,16 +1,19 @@
 /**
  * The live page: a brush gives runoff to grid cells, as pulses while it is held or as sources until they are erased,
  * and every river of the regions it passes over routes it live, in a worker that never stops, while the map draws their
- * discharge a frame at a time. The regions load as the brush passes over their rivers. The data sources come from the
- * page's address when it names them, and otherwise from the dialog.
+ * discharge a frame at a time. The regions load as the brush passes over their rivers. A river clicked with the gauge
+ * tool is gauged, and loads its region: the chart draws its discharge over the last steps the worker keeps, until it is
+ * clicked again or removed. The data sources come from the page's address when it names them, and otherwise from the
+ * dialog.
  */
 import './styles/tokens.css'
 import './styles/base.css'
 import './styles/components.css'
 import './styles/app.css'
 import './styles/live.css'
+import { createGaugeChart, GAUGE_COLORS } from './gauge-chart.js'
 import { createGrid, createLiveMap } from './live-map.js'
-import { DISCHARGE_CLASSES, dischargeGradient, streamsUrl } from './map.js'
+import { DISCHARGE_CLASSES, dischargeGradient, readReach, streamsUrl } from './map.js'
 import { readGridCoordinates } from './runoff.js'
 
 const COUNT = new Intl.NumberFormat('en-US')
@@ -32,8 +35,10 @@ for (const [name, value] of new URLSearchParams(location.search)) {
 }
 const sources = new Map() // each source cell's key and runoff depth an hour, in millimeters
 const requestedRegions = new Set() // the regions asked of the worker, loaded or loading
+const gauges = new Map() // each gauged river's id and its color, in the order gauged
 const updates = [] // the timings of each map update of the last TIMING_SECONDS, when each reached the screen
 const worker = new Worker(new URL('./live-worker.js', import.meta.url), { type: 'module' })
+const gaugeChart = createGaugeChart($('gauge-chart'), $('gauge-list'), removeGauge)
 let liveMap
 
 function readSources() {
@@ -71,6 +76,11 @@ function stroke({ tool, cellKeys, underBrush, regions }) {
     $('source-cells').textContent = COUNT.format(sources.size)
     worker.postMessage({ kind: 'runoff', cellKeys: Int32Array.from(cellKeys), depthMillimeters: depth })
   }
+  requestRegions(regions)
+}
+
+/** Load each of ``regions`` that is not loaded or loading. */
+function requestRegions(regions) {
   const { routingParameters, gridWeights } = readSources()
   for (const region of regions.filter(id => !requestedRegions.has(id))) {
     requestedRegions.add(region)
@@ -83,6 +93,45 @@ function stroke({ tool, cellKeys, underBrush, regions }) {
   }
 }
 
+/** Gauge the river a click of the gauge tool found, loading its region, or stop gauging it if it is gauged. */
+function toggleGauge(properties) {
+  const { riverId, region } = readReach(properties)
+  if (gauges.has(riverId)) {
+    removeGauge(riverId)
+    return
+  }
+  const color = GAUGE_COLORS.find(unused => ![...gauges.values()].includes(unused))
+  if (color === undefined) {
+    showError(`at most ${GAUGE_COLORS.length} rivers can be gauged at once`)
+    return
+  }
+  gauges.set(riverId, color)
+  showGauges()
+  requestRegions([region])
+}
+
+function removeGauge(riverId) {
+  gauges.delete(riverId)
+  showGauges()
+}
+
+/** Hand the gauges to the worker, the map, and the chart, and show the chart while there are any. */
+function showGauges() {
+  const gauged = Array.from(gauges, ([riverId, color]) => ({ riverId, color }))
+  worker.postMessage({ kind: 'gauges', riverIds: Int32Array.from(gauges.keys()) })
+  liveMap?.setGauges(gauged)
+  gaugeChart.setGauges(gauged)
+  $('gauged').hidden = gauges.size === 0
+}
+
+/** Draw each gauge's history a frame holds, ``riverIds`` and a row of ``history`` each. */
+function drawGauges({ riverIds, history }) {
+  const nSteps = riverIds.length === 0 ? 0 : history.length / riverIds.length
+  gaugeChart.draw(Array.from(riverIds, (riverId, gauge) => ({
+    riverId, color: gauges.get(riverId), discharge: history.subarray(gauge * nSteps, (gauge + 1) * nSteps),
+  })))
+}
+
 worker.onmessage = ({ data }) => {
   if (data.kind === 'network') {
     liveMap.setNetwork(data.riverIds, data.regions.map(region => region.id))
@@ -93,6 +142,7 @@ worker.onmessage = ({ data }) => {
     const drawStarted = performance.now()
     try {
       const nRedrawn = liveMap.drawDischarge(data.classes)
+      drawGauges(data.gauges)
       $('hours-routed').textContent = COUNT.format(data.stepsRouted)
       const drawn = performance.now()
       const update = { ...data.timings, handOffMs, drawMs: drawn - drawStarted }
@@ -115,6 +165,13 @@ try {
   const grid = createGrid(await readGridCoordinates(absoluteUrl(readSources().grid)))
   liveMap = await createLiveMap('map', absoluteUrl(streamsUrl(readSources())), grid, {
     onStroke: stroke,
+    onGaugeClicked(properties) {
+      try {
+        toggleGauge(properties)
+      } catch (error) {
+        showError(error.message)
+      }
+    },
     onError: error => showError(error.message),
   })
   worker.postMessage({ kind: 'start', nX: grid.nX, classes: DISCHARGE_CLASSES })
@@ -148,9 +205,10 @@ function showTimings() {
 }
 setInterval(showTimings, TIMING_SHOWN_EVERY)
 
-for (const button of document.querySelectorAll('#tools [data-tool]')) {
+// the tools, the brush's and the gauges', of which one is in use
+for (const button of document.querySelectorAll('[data-tool]')) {
   button.addEventListener('click', () => {
-    for (const other of document.querySelectorAll('#tools [data-tool]')) {
+    for (const other of document.querySelectorAll('[data-tool]')) {
       other.classList.toggle('active', other === button)
       other.setAttribute('aria-pressed', String(other === button))
     }
@@ -179,7 +237,8 @@ $('btn-play').addEventListener('click', () => {
   $('btn-play').setAttribute('aria-label', playing ? 'Play' : 'Pause')
 })
 
-// the header's reset erases every source, stops every pulse, and empties every river, and keeps the regions loaded
+// the header's reset erases every source, stops every pulse, empties every river, and forgets each gauge's history,
+// and keeps the regions loaded and the gauges
 $('btn-reset').addEventListener('click', () => {
   sources.clear()
   liveMap?.showPainted(sources)

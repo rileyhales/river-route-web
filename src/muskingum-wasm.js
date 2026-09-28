@@ -251,7 +251,9 @@ export function startTimeSteps(network, runoffByCell, nSteps) {
  * Start routing every river of ``network``, its downstreamPositions, c1, c2, and c3 in routing order, live: one step at
  * a time with the runoff forcing the caller gives each step, from no discharge. The stepper's ``forcing`` is the row of
  * each river's forcing for the next step, in level order, the river at routing position ``p`` at
- * ``levelPositions[p]``, and it is zeroed after each step; ``route()`` routes a step with it; ``discharge()`` and
+ * ``levelPositions[p]``, and it is zeroed after each step; ``levelDischarge`` is each river's discharge after the last
+ * step, in the same level order, for reading a few rivers without copying every one; ``route()`` routes a step with
+ * it; ``discharge()`` and
  * ``dischargeClasses(classing)`` are what startTimeSteps's stepper gives; and ``setDischarge(discharge)`` sets every
  * river's discharge, in routing order, as if routed to it, which carries one network's state into another. Routing
  * another network in this module lays it out over the stepper's arrays, and the stepper refuses to go on from then.
@@ -286,6 +288,7 @@ export function startLiveSteps({ downstreamPositions, c1, c2, c3 }) {
   return {
     levelPositions: work.views[9],
     forcing: work.views[12],
+    levelDischarge: work.views[5],
     route() {
       checkLaidOut()
       checked(kernel.route_live_step(stepping, work.offsets[12]))

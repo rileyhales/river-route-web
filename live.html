@@ -78,6 +78,19 @@
         <p id="error" class="error" role="alert" hidden></p>
       </section>
       <hr/>
+      <section id="gauges">
+        <h2>Gauges</h2>
+        <div class="row actions">
+          <button class="btn" type="button" data-tool="gauge" aria-pressed="false">Gauge</button>
+        </div>
+        <div id="gauged" hidden>
+          <figure id="gauge-chart"></figure>
+          <table class="table">
+            <tbody id="gauge-list"></tbody>
+          </table>
+        </div>
+      </section>
+      <hr/>
       <section id="timing">
         <h2>Map updates</h2>
         <table class="table">

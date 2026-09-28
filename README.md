@@ -40,8 +40,10 @@ Each of these first builds the routing kernel from C with `npm run wasm`, which 
 
 The data sources each page starts with come from `.env`, which a build reads: each region's routing parameters and grid
 weights and the streams from the hydrography's CloudFront, and the runoff from `v3.s3.riverforecastsystem.com`, whose
-years from 1940 to 2024 bound the period. The dev server reads `.env.development` instead, which names the `data/` it
-serves and its years of runoff, 1940 to 1949.
+years from 1940 to 2024 bound the period. The dev server reads `.env.development` instead, which names the routing
+parameters, grid weights, and streams of the `data/` it serves, laid out as the CloudFront lays them out
+(`routing/region={region}/` and `hydrography/global/`), and the runoff of `v3.s3.riverforecastsystem.com`, since
+`data/` holds no ERA5 runoff.
 
 The dev server serves `data/` at `/data/` as plain files, following links, which is how the inputs are read in place.
 `tests/prepare_test_data.py` fills it, run from this folder with the python environment of river-route beside it:
@@ -115,6 +117,12 @@ source's and pulse's runoff to the rivers whose catchments it covers, by the reg
 only the rivers holding more than the lowest class of discharge, 0.1 m³/s, over the network. The reset in the header
 erases every source, stops every pulse, and empties every river. The dialog's runoff grid and streams, when changed,
 start the page over from an address naming every source.
+
+Gauge, the tool of the Gauges section, gauges the river clicked, loading its region if it is not loaded, and outlines it
+on the map in its gauge's color; clicking it again, or its ✕ in the list, removes it. Up to six rivers are gauged at
+once. The engine records each gauge's discharge every step, keeping only the last 720, a month of hours, and each frame
+carries that history, which the chart draws with the newest step at its right edge, so that a flood wave passes across
+it and out. The reset forgets the gauges' history and keeps the gauges.
 
 ## The kernel
 

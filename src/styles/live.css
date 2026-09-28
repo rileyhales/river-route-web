@@ -1,4 +1,4 @@
-/* ── The live page's own styles · the brush, the tools, and the runoff sources' swatch ──────────────────────── */
+/* ── The live page's own styles · the brush, the tools, the runoff sources' swatch, and the gauges ─────────── */
 
 /* the brush, a circle following the pointer over the map, which the pointer's clicks pass through to the map */
 .brush-cursor {
@@ -36,4 +36,30 @@ label.check input {
     height: 12px;
     border: 1px solid rgba(56, 189, 248, .8);
     background: rgba(56, 189, 248, .4);
+}
+
+/* the gauges' chart, and the list under it of each gauge's color, river, and newest discharge */
+#gauge-chart svg {
+    display: block;
+    width: 100%;
+    overflow: visible;
+}
+
+#gauge-list .swatch {
+    display: inline-block;
+    margin-right: 8px;
+    vertical-align: middle;
+}
+
+#gauge-list td {
+    vertical-align: middle;
+}
+
+#gauge-list td:last-child {
+    width: 1%;
+    padding: 2px 0;
+}
+
+#gauged > * + * {
+    margin-top: 12px;
 }
