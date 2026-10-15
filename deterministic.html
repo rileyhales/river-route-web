@@ -4,20 +4,20 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="preload" href="/fonts/opensans.woff2" as="font" type="font/woff2" crossorigin/>
-  <title>Live Routing</title>
-  <script type="module" src="/src/live.js"></script>
+  <title>River Routing</title>
+  <script type="module" src="/src/main.js"></script>
 </head>
 <body>
 
 <div id="panel">
   <header>
-    <h1>Live Routing</h1>
+    <h1>River Routing</h1>
     <div class="row">
-      <!-- the calendar-days heroicon, MIT licensed -->
-      <a id="link-period" class="btn icon" href="%BASE_URL%index.html" title="Period routing" aria-label="Period routing">
+      <!-- the bolt heroicon, MIT licensed -->
+      <a id="link-live" class="btn icon" href="%BASE_URL%" title="Live routing" aria-label="Live routing">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
              stroke="currentColor" aria-hidden="true">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 7.5v11.25m-18 0A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75m-18 0v-7.5A2.25 2.25 0 0 1 5.25 9h13.5A2.25 2.25 0 0 1 21 11.25v7.5m-9-6h.008v.008H12v-.008ZM12 15h.008v.008H12V15Zm0 2.25h.008v.008H12v-.008ZM9.75 15h.008v.008H9.75V15Zm0 2.25h.008v.008H9.75v-.008ZM7.5 15h.008v.008H7.5V15Zm0 2.25h.008v.008H7.5v-.008Zm6.75-4.5h.008v.008h-.008v-.008Zm0 2.25h.008v.008h-.008V15Zm0 2.25h.008v.008h-.008v-.008Zm2.25-4.5h.008v.008H16.5v-.008Zm0 2.25h.008v.008H16.5V15Z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z"/>
         </svg>
       </a>
       <!-- the arrow-path heroicon, MIT licensed -->
@@ -39,74 +39,52 @@
   </header>
   <main>
     <div id="scroll">
-      <section id="brush">
-        <h2>Brush</h2>
-        <div class="row actions" id="tools">
-          <button class="btn active" type="button" data-tool="pan" aria-pressed="true">Pan</button>
-          <button class="btn" type="button" data-tool="pulse" aria-pressed="false">Pulse</button>
-          <button class="btn" type="button" data-tool="source" aria-pressed="false">Source</button>
-          <button class="btn" type="button" data-tool="erase" aria-pressed="false">Erase</button>
-        </div>
-        <div class="field">
-          <label for="brush-radius">Radius <em id="brush-radius-value">25 px</em></label>
-          <input id="brush-radius" type="range" min="10" max="100" step="5" value="25"/>
-        </div>
-        <div class="field">
-          <label for="brush-depth">Intensity <em id="brush-depth-value">30 mm/hr ≈ 1.18 in/hr</em></label>
-          <input id="brush-depth" type="range" min="5" max="250" step="5" value="30"/>
-        </div>
-        <label class="row check"><input id="show-grid" type="checkbox"/>Show Runoff Mapping Grid Cells</label>
-      </section>
-      <hr/>
-      <section id="simulation">
-        <h2>Simulation</h2>
-        <div class="row actions">
-          <button id="btn-play" class="btn primary round" type="button" title="Play / pause" aria-label="Play">▶</button>
-          <button id="btn-stop" class="btn round" type="button" title="Stop" aria-label="Stop" disabled>■</button>
-        </div>
-        <div class="field">
-          <label for="rate">Speed <em id="rate-value">1× = 24h/s</em></label>
-          <input id="rate" type="range" min="0" max="10" step="0.5" value="1"/>
-        </div>
+      <section id="study-area">
+        <h2>Study area</h2>
         <table class="table">
           <tbody>
-          <tr><td class="k">Hours routed</td><td class="v" id="hours-routed">0</td></tr>
-          <tr><td class="k">Source cells</td><td class="v" id="source-cells">0</td></tr>
-          <tr><td class="k">Regions</td><td class="v" id="regions-loaded">—</td></tr>
-          <tr><td class="k">Rivers</td><td class="v" id="rivers-routed">0</td></tr>
+          <tr><td class="k">Outlet river</td><td class="v" id="outlet-river">—</td></tr>
+          <tr><td class="k">Region</td><td class="v" id="outlet-region">—</td></tr>
+          <tr><td class="k">Rivers</td><td class="v" id="study-area-rivers">—</td></tr>
           </tbody>
         </table>
+      </section>
+      <hr/>
+      <section id="period">
+        <h2>Time period</h2>
+        <form id="period-form">
+          <div class="field">
+            <label for="period-start">Start</label>
+            <input id="period-start" name="start" type="date" value="1940-01-01" required/>
+          </div>
+          <div class="field">
+            <label for="period-end">End</label>
+            <input id="period-end" name="end" type="date" value="1940-12-31" required/>
+          </div>
+          <div class="row actions">
+            <button id="btn-route" class="btn primary" type="submit" disabled>Route</button>
+          </div>
+        </form>
         <p id="error" class="error" role="alert" hidden></p>
       </section>
-      <hr/>
-      <section id="gauges">
-        <h2>Monitoring Points</h2>
-        <div class="row actions">
-          <button class="btn" type="button" data-tool="gauge" aria-pressed="false">Monitoring points</button>
-        </div>
-        <div id="gauged" hidden>
-          <figure id="gauge-chart"></figure>
-          <table class="table">
-            <tbody id="gauge-list"></tbody>
-          </table>
-        </div>
-      </section>
-      <hr/>
-      <section id="timing">
-        <h2>Map updates</h2>
-        <table class="table">
-          <tbody>
-          <tr><td class="k">A second</td><td class="v" id="timing-updates">—</td></tr>
-          <tr><td class="k">Queue</td><td class="v" id="timing-queue">—</td></tr>
-          <tr><td class="k">Route</td><td class="v" id="timing-route">—</td></tr>
-          <tr><td class="k">Classes</td><td class="v" id="timing-classes">—</td></tr>
-          <tr><td class="k">Hand-off</td><td class="v" id="timing-hand-off">—</td></tr>
-          <tr><td class="k">Draw</td><td class="v" id="timing-draw">—</td></tr>
-          <tr><td class="k">To screen</td><td class="v" id="timing-to-screen">—</td></tr>
-          <tr><td class="k">Each update</td><td class="v" id="timing-total">—</td></tr>
-          </tbody>
-        </table>
-      </section>
+      <div id="outlet-discharge" hidden>
+        <hr/>
+        <section>
+          <h2>Outlet discharge</h2>
+          <figure id="hydrograph"></figure>
+          <div class="row actions">
+            <button id="btn-csv" class="btn" type="button">
+              <!-- the arrow-down-tray heroicon, MIT licensed -->
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5"
+                   stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round"
+                      d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+              </svg>
+              CSV
+            </button>
+          </div>
+        </section>
+      </div>
     </div>
   </main>
 </div>
@@ -115,12 +93,36 @@
 <div id="legend-overlay" class="card map-overlay">
   <div id="legend-items">
     <div class="legend-item"><span class="swatch stream"></span>Streams</div>
-    <div class="legend-item"><span class="swatch rain"></span>Runoff source</div>
+    <div class="legend-item"><span class="swatch upstream"></span>Study area</div>
+    <div class="legend-item"><span class="swatch outlet"></span>Outlet</div>
   </div>
-  <div id="discharge-legend">
+  <div id="discharge-legend" hidden>
     <h2>Discharge m³/s</h2>
     <div id="legend-ramp"></div>
     <div class="row between ticks"><span>≤1</span><span>10</span><span>10²</span><span>10³</span><span>10⁴</span><span>≥10⁵</span></div>
+  </div>
+</div>
+
+<div id="player" class="card player map-overlay">
+  <div id="progress-bar"></div>
+  <button id="btn-play" class="btn primary round" type="button" title="Play / pause (space)"
+          aria-label="Play">▶</button>
+  <div class="col grow">
+    <div class="row between">
+      <span id="time-label" class="time">—</span>
+      <span id="step-label" class="step">–/–</span>
+    </div>
+    <input id="slider" type="range" min="0" max="0" step="1" value="0" aria-label="Time step" disabled/>
+  </div>
+  <div class="col speed">
+    <label for="speed">Speed</label>
+    <select id="speed">
+      <option value="1">1d/s</option>
+      <option value="2" selected>2d/s</option>
+      <option value="4">4d/s</option>
+      <option value="8">8d/s</option>
+      <option value="16">16d/s</option>
+    </select>
   </div>
 </div>
 
@@ -140,8 +142,18 @@
         <input id="source-weights" name="gridWeights" required spellcheck="false" value="%VITE_GRID_WEIGHTS%"/>
       </div>
       <div class="field">
-        <label for="source-grid">Runoff grid</label>
-        <input id="source-grid" name="grid" required spellcheck="false" value="%VITE_RUNOFF_GRID%"/>
+        <label for="source-runoff">Runoff</label>
+        <input id="source-runoff" name="runoff" required spellcheck="false" value="%VITE_RUNOFF%"/>
+      </div>
+      <div class="field row">
+        <div class="grow">
+          <label for="source-first-year">First year</label>
+          <input id="source-first-year" name="firstYear" type="number" step="1" required value="%VITE_RUNOFF_FIRST_YEAR%"/>
+        </div>
+        <div class="grow">
+          <label for="source-last-year">Last year</label>
+          <input id="source-last-year" name="lastYear" type="number" step="1" required value="%VITE_RUNOFF_LAST_YEAR%"/>
+        </div>
       </div>
       <div class="field">
         <label for="source-streams">Streams</label>

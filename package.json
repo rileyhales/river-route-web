@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build --base=/webroute/",
-    "preview": "vite preview --base=/webroute/",
+    "build": "vite build",
+    "preview": "vite preview",
     "test": "node --test \"tests/*.test.js\"",
     "benchmark": "node tests/benchmark.js"
   },

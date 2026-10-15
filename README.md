@@ -6,10 +6,11 @@ sub-reaches or routed in subcycles, as river-route routes with use_subreaches an
 0.49 is refused. The kernel is river-route's own, its npm package `river-route`, and `src/prepare.js` ports the setup
 that settles every decision of a run, the sub-reaches and the coefficients, from its Python under the same names.
 
-The page is a map of every stream, patterned after webapp-rfs-v3. Clicking a river picks the study area, that river and
-every river upstream of it; the panel then routes it over the time period chosen, reading its inputs over HTTP, and the
-player plays every river's discharge on the map a step at a time while the panel draws the outlet's hydrograph. The
-reset button in the panel's header clears the study area and its route, keeping the period and the data sources.
+`deterministic.html` is a map of every stream, patterned after webapp-rfs-v3. Clicking a river picks the study area,
+that river and every river upstream of it; the panel then routes it over the time period chosen, reading its inputs over
+HTTP, and the player plays every river's discharge on the map a step at a time while the panel draws the outlet's
+hydrograph. The reset button in the panel's header clears the study area and its route, keeping the period and the data
+sources.
 
 | Input              | Format                                                                                         |
 |--------------------|------------------------------------------------------------------------------------------------|
@@ -30,9 +31,9 @@ its first dimension, beside it in the store; its steps must be uniform, and its 
 
 ```bash
 npm install
-npm run dev        # the pages, reading the data/ link at /data/, at the address vite prints, and /live.html
-npm run build      # the pages in dist/, to deploy at /webroute/, reading the data sources of .env
-npm run preview    # serves dist/ at /webroute/ of the address vite prints, as it is deployed
+npm run dev        # the pages, reading the data/ link at /data/, at the address vite prints, and /deterministic.html
+npm run build      # the pages in dist/, to deploy at the root of a site, reading the data sources of .env
+npm run preview    # serves dist/ at the address vite prints, as it is deployed
 npm test           # starts its own server, routes the test data, and checks every way it routes agrees
 npm run benchmark  # times each stage, in one thread and with pools of workers, and the routing alone
 ```
@@ -43,6 +44,9 @@ The data sources each page starts with come from `.env`, which a build reads: ea
 weights and the streams from the hydrography's CloudFront, and the runoff from `v3.s3.riverforecastsystem.com`, whose
 years from 1940 to 2024 bound the period. The dev server reads `.env.development` instead, which names every input in
 the `data/` it serves, whose ERA5 runoff, from 1940 to 1944, bounds the period.
+
+Each push to `main` builds the pages and publishes `dist/` to GitHub Pages at `river.hales.app`, by
+`.github/workflows/pages.yml`: the live page at the root, and the period's at `/deterministic.html`.
 
 The dev server serves `data/` at `/data/` as plain files, following links, which is how the inputs are read in place.
 `data/` is a link to `~/river-forecast-system-v3`, a folder laid out as the CloudFront lays it out:
@@ -84,7 +88,7 @@ parameters list rivers in `riverIndex` order.
 
 ## Routing live
 
-`live.html`, a second page, beside the first and linked from its header, routes runoff that a brush gives the map
+`index.html`, the page the site opens on, linked from the header of the other, routes runoff that a brush gives the map
 instead of runoff read from zarr. The brush is a circle over the grid of runoff cells, whose lines the Runoff grid box
 draws once zoomed in far enough to see them, and it gives each cell whose center it covers runoff of the intensity
 chosen, up to 250 mm an hour, two ways. Pulse, held down, gives it to the cells under the brush every hour of the

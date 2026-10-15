@@ -66,7 +66,7 @@ export default defineConfig({
   worker: { format: 'es' },
   build: {
     chunkSizeWarningLimit: 1100, // kB: maplibre-gl alone is about 800 of the page's 1,064
-    // both pages: routing a period, and routing live the runoff painted onto the map
-    rolldownOptions: { input: ['index.html', 'live.html'].map(page => resolve(import.meta.dirname, page)) },
+    // both pages: routing live the runoff painted onto the map, and routing a period
+    rolldownOptions: { input: ['index.html', 'deterministic.html'].map(page => resolve(import.meta.dirname, page)) },
   },
 })
