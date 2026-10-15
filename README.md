@@ -1,8 +1,10 @@
-# jsrr
+# river-route-web
 
-The simplest case of river-route for the browser: Muskingum routing with static coefficients, the uniform runoff
-transform, one reach per river routed at the runoff time step, and every river starting from no discharge. It matches
-river-route to within 1e-6 of the peak discharge.
+river-route's Muskingum routing with static coefficients for the browser, with the uniform runoff transform and every
+river starting from no discharge, at a routing step of 3600 s: every river too long or too short for it is split into
+sub-reaches or routed in subcycles, as river-route routes with use_subreaches and use_subcycles, and a river of x above
+0.49 is refused. The kernel is river-route's own, its npm package `river-route`, and `src/prepare.js` ports the setup
+that settles every decision of a run, the sub-reaches and the coefficients, from its Python under the same names.
 
 The page is a map of every stream, patterned after webapp-rfs-v3. Clicking a river picks the study area, that river and
 every river upstream of it; the panel then routes it over the time period chosen, reading its inputs over HTTP, and the
@@ -11,8 +13,8 @@ reset button in the panel's header clears the study area and its route, keeping 
 
 | Input              | Format                                                                                         |
 |--------------------|------------------------------------------------------------------------------------------------|
-| Routing parameters | parquet with `river_id`, `next_river_id`, `k`, `x`, every river before the one it drains into  |
-| Grid weights       | parquet with `river_id`, `x_index`, `y_index`, `area_sqm`, `proportion`, as in the netCDF      |
+| Network file       | river-route's parquet, read for `riverId`, `nextRiverId`, `muskingumK`, `muskingumX`           |
+| Grid weights       | parquet with `riverId`, `x_index`, `y_index`, `area_sqm`, `proportion`, as in the netCDF       |
 | Runoff             | one (time, y, x) zarr array of runoff depths a year, v2 or v3, like `.../era5_1940.zarr/ro`    |
 | Streams            | PMTiles of the streams, with `riverId`, `riverIndex`, `upstreamCount`, and `TDXHydroRegion`    |
 
@@ -28,62 +30,52 @@ its first dimension, beside it in the store; its steps must be uniform, and its 
 
 ```bash
 npm install
-npm run dev        # the pages, with the test data at /data/, at the address vite prints, and /live.html
+npm run dev        # the pages, reading the data/ link at /data/, at the address vite prints, and /live.html
 npm run build      # the pages in dist/, to deploy at /webroute/, reading the data sources of .env
 npm run preview    # serves dist/ at /webroute/ of the address vite prints, as it is deployed
-npm test           # starts its own server, routes the test data, and compares with river-route
-npm run benchmark  # times each stage in both orders, in one thread and with pools of workers, and each kernel alone
+npm test           # starts its own server, routes the test data, and checks every way it routes agrees
+npm run benchmark  # times each stage, in one thread and with pools of workers, and the routing alone
 ```
 
-Each of these first builds the routing kernel from C with `npm run wasm`, which needs Homebrew's `llvm@22` and `lld@22`
-(or `LLVM_BIN` and `LLD_BIN` naming other folders of clang and wasm-ld).
+`npm install` installs the kernel, river-route's WebAssembly, from npm as the package `river-route`, version 3.
 
-The data sources each page starts with come from `.env`, which a build reads: each region's routing parameters and grid
+The data sources each page starts with come from `.env`, which a build reads: each region's network file and grid
 weights and the streams from the hydrography's CloudFront, and the runoff from `v3.s3.riverforecastsystem.com`, whose
-years from 1940 to 2024 bound the period. The dev server reads `.env.development` instead, which names the routing
-parameters, grid weights, and streams of the `data/` it serves, laid out as the CloudFront lays them out
-(`routing/region={region}/` and `hydrography/global/`), and the runoff of `v3.s3.riverforecastsystem.com`, since
-`data/` holds no ERA5 runoff.
+years from 1940 to 2024 bound the period. The dev server reads `.env.development` instead, which names every input in
+the `data/` it serves, whose ERA5 runoff, from 1940 to 1944, bounds the period.
 
 The dev server serves `data/` at `/data/` as plain files, following links, which is how the inputs are read in place.
-`tests/prepare_test_data.py` fills it, run from this folder with the python environment of river-route beside it:
+`data/` is a link to `~/river-forecast-system-v3`, a folder laid out as the CloudFront lays it out:
 
 ```bash
-../river-route/.venv/bin/python tests/prepare_test_data.py \
-    --region-dir ~/data/v3TestData/hydrography/region=7020014250 \
-    --runoff ~/data/era5_zarr_16x16_yearly/year=1940/era5_1940.zarr \
-    --rivers 720184033 \
-    --page-region-dirs ~/data/v3TestData/hydrography/region=* \
-    --more-runoff ~/data/era5_zarr_16x16_yearly/year=194[1-9]/era5_194[1-9].zarr \
-    --streams ~/data/v3TestData/hydrography/global/streams*.pmtiles
+ln -s ~/river-forecast-system-v3 data
 ```
 
-It links the region's `routing.parquet` and the runoff store, writes the grid weights as parquet with
-`grid_weights_to_parquet`, and routes the region with river-route to record the hydrographs of the main outlet and of
-each river in `--rivers`, which the tests reproduce. The last three arguments serve the page: every region a click may
-pick, linked and converted the same way, the runoff of the years after, which a test also reads, and the streams
-archives. The dev server answers a request for a byte range of a file, as the PMTiles reader asks.
+It holds `routing/region=<id>/` with each region's `network.parquet` and `gridweights_ERA5_<id>.parquet`,
+`forcings/era5/<year>.zarr`, and `hydrography/global/` with the streams archives. The tests route region 7020014250,
+the Columbia, with the runoff of 1940 and 1941. The dev server answers a request for a byte range of a file, as the
+PMTiles reader asks.
 
 ## How it routes
 
 The page hands the inputs to a worker, which reads the two parquet files and the metadata of each year's runoff array at
 once, keeps the rivers upstream of the target, and reads their cells' runoff over the period chunk by chunk on a pool of
-workers. The pool then
-routes regions of the network at once, subtrees of at most a few thousand rivers packed onto the workers largest first,
-while the page's worker routes the main stem the regions drain into. Each river's whole series is routed before the
-next, with its upstream inflow summed in a row of a pool that only a handful of rivers need at once.
+workers. The pool then routes the network's jobs at once, the sub-watershed blocks that river-route's `assignBlocks`
+packs for one worker each, as river-route's Python packs them for its threads, each worker given only its blocks'
+weights and its cells' runoff. The page's worker then routes the main stem the blocks drain into from the series of the
+blocks' outlets. Each river is routed over a window of steps before the next river, reading its inflow from the
+discharge of the rivers draining into it, and only the target's series is kept, so the memory routing takes is one
+window of every river's discharge however long the period.
 
-`routeHydrograph` also routes time-step-first, every river for one step before the next, when its inputs say
-`order: 'time'`; the page routes river-first, the default, and both give the same hydrograph.
-
-The worker hands the page what it routed, the network and its runoff, and the page routes it again time-step-first in
-its own thread, one step for each the player shows, with the stepper of `src/muskingum-wasm.js`, so that a period of any
-length is never held as every river's discharge at every step. The kernel then classes every river's discharge, 5
-classes to each tenfold from 0.1 m³/s or less up to 10⁵ m³/s or more: 0.13 ms a step for the Amazon's 237,718 rivers,
-against 3.6 ms in JavaScript, and the step itself routes in 0.23 ms. Finer classes would differ by colors too close to
-tell apart, and every class a river crosses costs the map an update: at 5 a tenfold, about 4% of rivers change class an
-hour, against 7% at 8. The map draws classes as feature state, as webapp-rfs-v3 animates its forecasts, on only the
-routed rivers the tiles in view hold, found again as tiles load and the view moves, and a step sets state only on a
+The worker hands the page what it routed, the network and its runoff, and the player routes it again in the page's own
+thread a window of 64 steps at a time with the stepper of `river-route`, routing the window that holds each step it
+shows when that window is not routed yet, so that a period of any length is never held as every river's discharge at
+every step. `src/discharge-classes.js` then classes every river's discharge, 5 classes to each tenfold from 1 m³/s or
+less up to 10⁵ m³/s or more: 2.0 ms a step for the Amazon's 237,718 rivers. Every river of the lowest class, 1 m³/s or
+less, is drawn in its color half transparent, as dry, on both pages. Finer classes would differ by colors too
+close to tell apart, and every class a river crosses costs the map an update: at 5 a tenfold, about 4% of rivers change
+class an hour, against 7% at 8. The map draws classes as feature state, as webapp-rfs-v3 animates its forecasts, on only
+the routed rivers the tiles in view hold, found again as tiles load and the view moves, and a step sets state only on a
 river whose discharge has moved a quarter of a class past the edge of the class drawn, so that a river near an edge does
 not flicker between two. Each river is as wide as its stream order, so a change of class updates only its color. A study
 area is highlighted before it is routed by the run of `riverIndex` that every river upstream of an outlet fills in the
@@ -101,87 +93,80 @@ pulse and a drag rains along its way; Source makes the cells it passes over give
 away; Pan, the tool the page starts on, moves the map. The grid is the one that a runoff array's latitudes and
 longitudes center, a quarter degree for ERA5, and any evenly spaced grid serves as well, with grid weights made for it.
 
-The routing never stops. A worker, `src/live-worker.js`, routes every river of the regions loaded an hour at a time, as
-many hours a second as the page asks, with the kernel's live stepping, whose runoff forcing its caller gives each step
-rather than reading from runoff arrays. The page's messages, the pulses, the sources placed and erased, the regions to
-load, and the rate, wait in a queue that each tick of the worker takes up first. Its answers are frames of every river's
-discharge class after the latest step, and the page is only ever handed the newest: the next frame waits until the page
-has drawn the last and handed its buffer back, so that frames never pile up behind a busy page. The panel shows the map
-updates of the last second: how many there were, and the mean milliseconds of each stage of one, from taking up the
-queue, routing, and classing discharge in the worker, to handing the frame to the page, drawing it as feature state, and
-the map drawing it on the screen, and their sum.
+The routing goes on until it is stopped. A worker, `src/live-worker.js`, routes every river of the regions loaded an
+hour at a time, as many hours a second as the page asks, with the stepper of `river-route` in windows of up to 32 steps,
+writing the runoff depth that sources and pulses give the cells of the regions' grid weights into each window rather
+than reading it from runoff arrays. The page's messages, the pulses, the sources placed and erased, the regions to
+load, and the rate, wait in a queue that each tick of the worker takes up first. Its answers are frames of every
+river's discharge class after the latest step, and the page is only ever handed the newest: the next frame waits until
+the page has drawn the last and handed its buffer back, so that frames never pile up behind a busy page. The panel
+shows the map updates of the last second: how many there were, and the mean milliseconds of each stage of one, from
+taking up the queue, routing, and classing discharge in the worker, to handing the frame to the page, drawing it as
+feature state, and the map drawing it on the screen, and their sum.
 
 A region loads the first time the brush passes over one of its rivers, and its rivers join the network after those of
-the regions before, each keeping its discharge, so that routing goes on undisturbed. `src/live-engine.js` gives each
-source's and pulse's runoff to the rivers whose catchments it covers, by the region's grid weights, and the map draws
-only the rivers holding more than the lowest class of discharge, 0.1 m³/s, over the network. The reset in the header
-erases every source, stops every pulse, and empties every river. The dialog's runoff grid and streams, when changed,
-start the page over from an address naming every source.
+the regions before, each keeping the discharge of every one of its sub-reaches, so that routing goes on undisturbed.
+`src/live-engine.js` gives each source's and pulse's runoff to the rivers whose catchments it covers, by the region's
+grid weights, and the map draws every river of the regions loaded over the network. The reset in the header erases every source, stops every pulse, and empties every river. The stop button,
+beside play, ends the worker and forgets everything it routed: the sources, the regions loaded, and the gauges. Play,
+the brush, or a gauge then starts another worker routing from nothing. The speed runs from 0 to 10×, 240 hours a
+second. The dialog's runoff grid and streams, when changed, start the page over from an address naming every source.
 
-Gauge, the tool of the Gauges section, gauges the river clicked, loading its region if it is not loaded, and outlines it
-on the map in its gauge's color; clicking it again, or its ✕ in the list, removes it. Up to six rivers are gauged at
-once. The engine records each gauge's discharge every step, keeping only the last 720, a month of hours, and each frame
-carries that history, which the chart draws with the newest step at its right edge, so that a flood wave passes across
-it and out. The reset forgets the gauges' history and keeps the gauges.
+Monitoring points, the tool of the Monitoring Points section, gauges the river clicked, loading its region if it is not
+loaded, and outlines it on the map in its gauge's color; clicking it again, or its ✕ in the list, removes it. Up to six
+rivers are gauged at once. The engine records each gauge's discharge every step, keeping only the last 720, a month of
+hours, and each frame carries that history, which the chart draws with the newest step at its right edge, so that a
+flood wave passes across it and out. The reset forgets the gauges' history and keeps the gauges.
 
 ## The kernel
 
-`src/muskingum.c` routes, compiled to WebAssembly by `build-wasm.js`, and `src/muskingum-wasm.js` lays its arrays out
-in the module's memory and calls it. `src/muskingum.js` is the same routing in JavaScript: the reference the tests hold
-the C to, 7 times slower river-first and 12 times slower time-step-first.
+The kernel is river-route's, the npm package `river-route`, which holds only the WebAssembly: the C of
+`river_route/kernels/c`, the kernel river-route's Python routes with, compiled from its `wasm/` folder.
+river-route-web's `src/kernel.js` lays its arrays out in the module's memory and calls it, and `src/prepare.js` settles
+every decision of a run as river-route's Python does, under the same names. Each river is routed as its sub-reaches, in
+place in its own row of discharge, each with coefficients of its own and its share of the river's runoff, and the
+subcycles of a river too short for the step are folded into its coefficients, so that every sub-reach takes one step per
+runoff step. A river reads its inflow from the rows of the rivers draining directly into it. Nothing compares `kernel.js` and `prepare.js`
+with river-route's Python.
 
-The C computes in float32 with 128 bit vectors, four steps to a vector, as river-route computes in float32. Each river's
-recurrence `q[t] = c3 q[t-1] + forcing[t]` is solved eight steps at a time by a prefix scan, so that only one vector
-multiply and add per eight steps waits on the step before, which is river-route's numba kernel's trick in vector form.
-A river reads its catchment's one or two cells' runoff as it routes, and headwaters take a loop without the inflow.
+The C computes in float32 with 128 bit vectors, as river-route computes in float32. Each sub-reach's recurrence is
+solved eight steps at a time, two vectors of four, by a prefix scan, so that only one multiply and add per eight steps
+waits on the step before. It is built twice: `routing-relaxed.wasm` uses WebAssembly's relaxed SIMD, whose multiply and
+add are fused, and `routing.wasm` does not, for browsers without it. The page takes whichever the browser compiles.
 
-It is built twice: `muskingum-relaxed.wasm` uses WebAssembly's relaxed SIMD, whose fused multiply and add routed 20%
-faster, and `muskingum.wasm` does not, for browsers without it. The page takes whichever the browser compiles.
+Everything routes river-first: each river over a window of steps before the next river, and every river over a window
+before the next window, so the module holds one window of the runoff and of every river's discharge. `routeRivers`
+routes a period and keeps the series of only the rivers `keep` names, of only `blocks` of rivers when given them, from
+the series `given` of the rivers they drain from, as the pool's main stem is routed. The stepper `startWindows` routes a
+window at a time for the player and the live page: its caller writes each window's runoff depth, or copies it from a
+period's runoff, and reads every river's discharge at any step of the window, or one river's at every step, and the
+discharge of every sub-reach, which carries a network's state into another.
 
-Time-step-first routing carries one value per river from one step to the next, its discharge. The rivers are routed
-in the order of their topological levels, headwaters first, so that no river drains into a river of its own level and
-each level's rivers are routed four to a vector; in routing order, three rivers in four read what the river before had
-just pushed into them, which chained the whole network into one sequence, 3.2 times slower. Each river pushes c1 times
-its new discharge plus c2 times its old into the forcing of the river it drains into, which sums them over its
-upstream rivers into c1 I[t] + c2 I[t-1]. The runoff forcing is summed ahead 32 steps at a time with vectors along
-time, four rivers at a time, and turned into a row of every river for each step. It is three times slower than
-river-first routing because each push is a write to a river elsewhere, one lane at a time, where river-first routing
-adds whole series with vectors, and because it routes all 30,000 rivers' state through the cache every step.
-
-River-first routing can also route window by window (`routeRiversByTimeWindow` in `src/muskingum-wasm.js`): every
-river's series for a window of steps before the next window, each river carrying its discharge and inflow from one
-window into the next, handing every river's discharge in each window to a callback. That gives every river's discharge
-in time order, as time-step-first routing does, at the speed of river-first routing once windows are a few hundred
-steps long.
-
-The C follows NASA's rules for C: it allocates nothing, loops over counts it checks, checks every argument and returns
-a code naming any problem, and builds only when clang-tidy, the clang static analyzer, and `-Weverything` find nothing.
-`build-wasm.js` explains each of the few warnings it turns off. Routing is split into calls of a few hundred rivers,
-since browsers swap in a function's optimized code only between calls: in one call, the first route in each worker ran
-at a third of the speed.
+The C follows NASA's rules for C: it allocates nothing, loops over counts it checks, checks every argument and returns a
+code naming any problem. river-route builds the published package with `build.py --wasm --checks`, which compiles it
+with every warning of clang an error and runs clang-tidy and clang's static analyzer on it. Routing is
+split into calls of 256 rivers, since browsers swap in a function's optimized code only between calls: in one call, the
+first route in each worker ran at a third of the speed.
 
 ## Speed
 
-Routing the Columbia above its mouth, 29,876 rivers through the 8,777 hours of 1940, on an M3 Max, the average of two
-routes after a first:
+Routing the Columbia above its mouth, 29,405 rivers, each one reach at the fixed step of 3600 s, as river-route-web
+routed before it split rivers into sub-reaches and subcycles, through the 8,777
+hours of 1940, on an M3 Max, the average of two routes after a first:
 
-| where      | order           | inputs | runoff | routing | total  |
-|------------|-----------------|--------|--------|---------|--------|
-| one thread | river-first     | 44 ms  | 142 ms | 79 ms   | 264 ms |
-| one thread | time-step-first | 41 ms  | 139 ms | 242 ms  | 422 ms |
-| 8 workers  | river-first     | 37 ms  | 38 ms  | 28 ms   | 103 ms |
-| 8 workers  | time-step-first | 44 ms  | 31 ms  | 74 ms   | 149 ms |
+| where      | inputs | runoff | routing | total  |
+|------------|--------|--------|---------|--------|
+| one thread | 56 ms  | 110 ms | 99 ms   | 264 ms |
+| 8 workers  | 47 ms  | 72 ms  | 39 ms   | 159 ms |
 
-The kernels alone, in one thread:
+The routing alone, in one thread, with relaxed SIMD:
 
-| kernel                                                             | JavaScript | WebAssembly |
-|--------------------------------------------------------------------|------------|-------------|
-| river-first                                                        | 574 ms     | 79 ms       |
-| time-step-first                                                    | 2,778 ms   | 238 ms      |
-| time-step-first, handing every river's discharge after each step   |            | 338 ms      |
-| windows of 32 steps, handing every river's discharge in each       |            | 155 ms      |
-| windows of 256 steps, handing every river's discharge in each      |            | 88 ms       |
+| routing                                                                   | WebAssembly |
+|---------------------------------------------------------------------------|-------------|
+| `routeRivers`, keeping the outlet's series                                | 98 ms       |
+| `startWindows` in windows of 32 steps, every river's discharge each step  | 524 ms      |
+| `startWindows` in windows of 64 steps, every river's discharge each step  | 448 ms      |
+| `startWindows` in windows of 256 steps, every river's discharge each step | 657 ms      |
 
-Time-step-first routing takes 27 µs per step for every river of the Columbia, and 39 µs handing every river's
-discharge after each step. The first route on a page takes about 35 ms more, while each worker compiles the blosc
-decoder.
+The player's windows of 64 steps take 51 µs a step for every river of the Columbia, its discharge read out at every
+step included. The first route on a page takes about 35 ms more, while each worker compiles the blosc decoder.

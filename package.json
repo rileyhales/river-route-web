@@ -1,23 +1,19 @@
 {
-  "name": "jsrr",
+  "name": "river-route-web",
   "private": true,
   "type": "module",
   "scripts": {
-    "wasm": "node build-wasm.js",
-    "predev": "npm run wasm",
     "dev": "vite",
-    "prebuild": "npm run wasm",
     "build": "vite build --base=/webroute/",
     "preview": "vite preview --base=/webroute/",
-    "pretest": "npm run wasm",
     "test": "node --test \"tests/*.test.js\"",
-    "prebenchmark": "npm run wasm",
     "benchmark": "node tests/benchmark.js"
   },
   "dependencies": {
     "hyparquet": "^1.31.1",
     "maplibre-gl": "^6.11.2",
     "pmtiles": "^4.5.0",
+    "river-route": "^3.0.0",
     "zarrita": "^0.7.5"
   },
   "devDependencies": {

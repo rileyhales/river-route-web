@@ -2,7 +2,7 @@ import { createReadStream, statSync } from 'node:fs'
 import { extname, resolve, sep } from 'node:path'
 import { defineConfig } from 'vite'
 
-// links to inputs read in place, grid weights as parquet, and expected hydrographs, made by tests/prepare_test_data.py
+// a link to the inputs read in place: routing/region=<id>/, network files and grid weights, and forcings/era5/
 const DATA_DIRECTORY = resolve(import.meta.dirname, 'data')
 const CONTENT_TYPES = new Map([['.json', 'application/json'], ['.parquet', 'application/vnd.apache.parquet']])
 const BYTE_RANGE = /^bytes=(\d*)-(\d*)$/ // one range: first-last, first- to the end, or -the last so many bytes

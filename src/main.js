@@ -7,9 +7,9 @@ import './styles/tokens.css'
 import './styles/base.css'
 import './styles/components.css'
 import './styles/app.css'
+import { classifyDischarge } from './discharge-classes.js'
 import { createHydrographChart } from './hydrograph.js'
 import { createRiverMap, DISCHARGE_CLASSES, dischargeGradient, readReach, streamsUrl } from './map.js'
-import { startTimeSteps } from './muskingum-wasm.js'
 import { createPlayer } from './player.js'
 
 const SECONDS_PER_DAY = 86400
@@ -21,6 +21,7 @@ const chart = createHydrographChart($('hydrograph'))
 const routeWorker = new Worker(new URL('./route-worker.js', import.meta.url), { type: 'module' })
 let studyArea // the reach clicked, as readReach reads it
 let routing // the study area and period the worker is routing, until it answers
+let classes // each routed river's discharge class at the step shown
 
 const riverMap = await createRiverMap('map', absoluteUrl(streamsUrl(readSources())), {
   onStreamClicked(properties) {
@@ -32,8 +33,8 @@ const riverMap = await createRiverMap('map', absoluteUrl(streamsUrl(readSources(
   },
   onError: error => showError(error.message),
 })
-const player = createPlayer((step, stepper) => {
-  riverMap.drawDischarge(stepper.dischargeClasses(DISCHARGE_CLASSES))
+const player = createPlayer((step, discharge) => {
+  riverMap.drawDischarge(classifyDischarge(discharge, DISCHARGE_CLASSES, classes))
   chart.markStep(step)
 })
 $('legend-ramp').style.background = dischargeGradient()
@@ -112,7 +113,8 @@ function showRoute({ riverId, times, discharge, riversRouted, kernel, timings, n
   $('discharge-legend').hidden = false
   chart.draw({ riverId, times, discharge })
   riverMap.startDischarge(riverIds)
-  player.load(times, startTimeSteps(network, runoffByCell, times.length))
+  classes = new Float32Array(riverIds.length)
+  player.load(times, network, runoffByCell)
 }
 
 $('period-form').addEventListener('submit', event => {

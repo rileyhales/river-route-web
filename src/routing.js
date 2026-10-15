@@ -1,40 +1,44 @@
 /**
- * Muskingum routing of gridded runoff to the hydrograph of one river, the simplest case of river-route: static
- * coefficients, the uniform runoff transform, one reach per river, a routing step equal to the runoff step, and every
- * river starting from no discharge. The routing parameters and grid weights are parquet files and the runoff a zarr
- * array a year, all read over HTTP. Only the chosen river and the rivers upstream of it are routed, over the chosen
- * period.
+ * Muskingum routing of gridded runoff to the hydrograph of one river with river-route's static coefficients and
+ * uniform runoff transform, every river starting from no discharge. prepare.js settles every decision of the run, the
+ * coefficients and the sub-reaches of each river, and kernel.js routes; this module reads the inputs they route.
+ * The network file and grid weights are parquet files and the runoff a zarr array a year, all read over HTTP. Only the
+ * chosen river and the rivers upstream of it are routed, over the chosen period.
  */
 import { parquetMetadata, parquetRead, parquetSchema } from 'hyparquet'
-import { kernelModule, routeRivers, routeRiversByTimeStep } from './muskingum-wasm.js'
+import { kernelModule, routeRivers } from './kernel.js'
+import * as kernelSetup from './prepare.js'
 import { openRunoff, readChunkCells, readRunoffCells } from './runoff.js'
 
-// the kernels of each routing order: each river's whole series before the next, or every river for each time step
-const KERNELS = { river: routeRivers, time: routeRiversByTimeStep }
+// seconds: every river's step, an hour, in sub-reaches or subcycles of it where its coefficients would be negative
+const DT_ROUTING = 3600
+const ROUTING_PARAMETER_COLUMNS = {
+  riverId: Int32Array, nextRiverId: Int32Array, muskingumK: Float64Array, muskingumX: Float64Array,
+}
+const GRID_WEIGHT_COLUMNS = {
+  riverId: Int32Array, x_index: Int32Array, y_index: Int32Array, area_sqm: Float64Array, proportion: Float64Array,
+}
 
 /**
- * Route runoff to the hydrograph of ``riverId``, or when it is undefined, of the outlet that drains the largest area,
- * in ``order``: 'river', each river's whole series before the next, the faster, or 'time', every river for one time
- * step before the next. Everything runs in this thread unless ``workerPool`` is given: its workers then read the runoff
- * chunks and route the regions of the network, while this thread routes the main stem the regions drain into. Even the
- * 1,390 rivers above the Willamette's mouth routed in 11 ms on 8 workers rather than 27 ms in one thread. What was
- * routed comes back too: the network, the id of each of its rivers, and their cells' runoff, as prepareRouting gives
- * them, for a map to route again step by step.
+ * Route runoff to the hydrograph of ``riverId``, or when it is undefined, of the outlet that drains the largest area.
+ * Everything runs in this thread unless ``workerPool`` is given: its workers then read the runoff chunks and route the
+ * jobs of sub-watershed blocks, while this thread routes the main stem the blocks drain into. What was routed comes
+ * back too: the network, the id of each of its rivers, and their cells' runoff, as prepareRouting gives them, for a map
+ * to route again step by step.
  */
 export async function routeHydrograph(inputs, workerPool) {
-  const order = inputs.order ?? 'river'
-  if (!Object.hasOwn(KERNELS, order)) throw new Error(`order must be 'river' or 'time', not ${order}`)
   const { riverId, riverIds, times, network, runoffByCell, nSteps, timings } = await prepareRouting(inputs, workerPool)
   const started = performance.now()
+  const runoff = { depth: runoffByCell, nSteps }
   const series = workerPool?.size > 1
-    ? await routeRegionsInParallel(network, runoffByCell, nSteps, workerPool, order)
-    : KERNELS[order](network, runoffByCell, nSteps)
+    ? await routeJobsInParallel(network, runoff, workerPool)
+    : routeRivers(network, runoff, { keep: network.outlets }) // the target, the one river draining out of them
   return {
     riverId,
     times,
-    discharge: series.map(discharge => Math.max(discharge, 0)), // clamped as river-route writes discharge
-    riversRouted: network.c1.length,
-    kernel: `${kernelModule} ${order}`,
+    discharge: series,
+    riversRouted: riverIds.length,
+    kernel: kernelModule,
     timings: { ...timings, routing: performance.now() - started },
     network,
     riverIds,
@@ -44,9 +48,9 @@ export async function routeHydrograph(inputs, workerPool) {
 
 /**
  * Read everything routing to the hydrograph of ``riverId`` needs: the network of it and the rivers upstream of it, in
- * the form routeRivers takes, the id of each of its rivers, and its cells' runoff over ``period``, { start, stop } in
- * seconds since 1970 with stop left out, or over every step of ``runoffUrls`` without one. Runoff is read on
- * ``workerPool`` when it is given.
+ * the form kernel.js's routeRivers takes, the id of each of its rivers, and its cells' runoff over ``period``,
+ * { start, stop } in seconds since 1970 with stop left out, or over every step of ``runoffUrls`` without one, each
+ * cell's steps one after another as runoffByCell. Runoff is read on ``workerPool`` when it is given.
  */
 export async function prepareRouting(inputs, workerPool) {
   const { routingParametersUrl, gridWeightsUrl, runoffUrls, period, riverId } = inputs
@@ -61,13 +65,14 @@ export async function prepareRouting(inputs, workerPool) {
     ? findMainOutlet(parameters.downstreamIndices, catchmentAreas)
     : findRiver(parameters, riverId, routingParametersUrl)
   const rivers = selectUpstreamRivers(parameters.downstreamIndices, target)
-  const network = prepareNetwork(parameters, weights, riverOfWeight, catchmentAreas, rivers, runoff)
+  const matched = { parameters, weights, riverOfWeight, catchmentAreas }
+  const { network, cellY, cellX } = prepareNetwork(matched, rivers, runoff)
   const inputsRead = performance.now()
   const arrays = new Map(runoff.parts.map(part => [part.url, part.array]))
   const readChunk = workerPool === undefined
     ? task => readChunkCells(arrays.get(task.arrayUrl), task)
     : task => workerPool.run({ kind: 'readChunkCells', ...task })
-  const runoffByCell = await readRunoffCells(runoff, network.cellY, network.cellX, readChunk)
+  const runoffByCell = await readRunoffCells(runoff, cellY, cellX, readChunk)
   return {
     riverId: parameters.riverIds[target],
     riverIds: rivers.map(river => parameters.riverIds[river]),
@@ -80,10 +85,10 @@ export async function prepareRouting(inputs, workerPool) {
 }
 
 /**
- * Everything live routing needs of every river of a region, in routing parameter order: their ids, the position each
- * drains into, and their Muskingum coefficients at a step of ``stepSeconds``; and of each grid weight, its river's
- * position, its cell, as a y and an x index of the runoff grid, and the forcing a meter of runoff depth in the cell
- * gives the river, c4 times the river's catchment area in the cell.
+ * Everything live routing needs of every river of a region, in network file order: their ids; the network kernel.js
+ * routes of them at a step of ``stepSeconds``, with each river's weights, weightStarts and weights, the volume (m³) a
+ * meter of runoff depth in each weight's cell gives the river, but not the cells, which a live engine numbers; and the
+ * cell of each weight, as a y and an x index of the runoff grid.
  */
 export async function prepareRegion({ routingParametersUrl, gridWeightsUrl }, stepSeconds) {
   const [parameters, weights] = await Promise.all([
@@ -92,42 +97,30 @@ export async function prepareRegion({ routingParametersUrl, gridWeightsUrl }, st
   ])
   const { riverOfWeight, catchmentAreas } = matchWeightsToRivers(parameters, weights, gridWeightsUrl)
   const rivers = Int32Array.from(parameters.riverIds.keys())
-  const { c1, c2, c3, c4 } = muskingumCoefficients(parameters, rivers, stepSeconds)
-  const weightForcing = Float64Array.from(riverOfWeight, (river, weight) => {
-    return c4[river] * catchmentAreas[river] * weights.proportion[weight]
-  })
+  const matched = { parameters, weights, riverOfWeight, catchmentAreas }
+  const { weightCells: rows, ...network } = prepareRivers(matched, rivers, stepSeconds, 1)
   return {
     riverIds: parameters.riverIds,
-    downstreamPositions: parameters.downstreamIndices,
-    c1,
-    c2,
-    c3,
-    weightRiver: riverOfWeight,
-    weightCellY: weights.y_index,
-    weightCellX: weights.x_index,
-    weightForcing,
+    network,
+    weightCellY: rows.map(row => weights.y_index[row]),
+    weightCellX: rows.map(row => weights.x_index[row]),
   }
 }
 
-const ROUTING_PARAMETER_COLUMNS = { river_id: Int32Array, next_river_id: Int32Array, k: Float64Array, x: Float64Array }
-const GRID_WEIGHT_COLUMNS = {
-  river_id: Int32Array, x_index: Int32Array, y_index: Int32Array, area_sqm: Float64Array, proportion: Float64Array,
-}
-
-/** The routing parameters, with each river's position by id and the position of the river it drains into. */
+/** The network file's columns, with each river's position by id and the position of the river it drains into. */
 export async function readRoutingParameters(url) {
-  const { river_id: riverIds, next_river_id: nextRiverIds, k, x } = await readParquetColumns(
+  const { riverId: riverIds, nextRiverId: nextRiverIds, muskingumK: k, muskingumX: x } = await readParquetColumns(
     url, ROUTING_PARAMETER_COLUMNS,
   )
   const indexOfRiver = new Map()
   for (let river = 0; river < riverIds.length; river++) {
-    if (indexOfRiver.has(riverIds[river])) throw new Error(`${url} has river_id ${riverIds[river]} more than once`)
+    if (indexOfRiver.has(riverIds[river])) throw new Error(`${url} has riverId ${riverIds[river]} more than once`)
     indexOfRiver.set(riverIds[river], river)
   }
   const downstreamIndices = new Int32Array(riverIds.length)
   for (let river = 0; river < riverIds.length; river++) {
     const downstream = nextRiverIds[river] === -1 ? -1 : indexOfRiver.get(nextRiverIds[river])
-    if (downstream === undefined) throw new Error(`${url} has next_river_id ${nextRiverIds[river]}, not a river_id`)
+    if (downstream === undefined) throw new Error(`${url} has nextRiverId ${nextRiverIds[river]}, not a riverId`)
     if (downstream !== -1 && downstream <= river) {
       throw new Error(`${url} lists river ${riverIds[river]} after ${nextRiverIds[river]}, the river it drains into`)
     }
@@ -173,12 +166,12 @@ export async function readParquetColumns(url, typeOfColumn) {
 
 /** The routing parameters row of each weight row, and each river's catchment area, the sum of its weights' areas. */
 function matchWeightsToRivers({ riverIds, indexOfRiver }, weights, url) {
-  const riverOfWeight = new Int32Array(weights.river_id.length)
+  const riverOfWeight = new Int32Array(weights.riverId.length)
   const catchmentAreas = new Float64Array(riverIds.length)
   const weightsOfRiver = new Int32Array(riverIds.length)
   for (let weight = 0; weight < riverOfWeight.length; weight++) {
-    const river = indexOfRiver.get(weights.river_id[weight])
-    if (river === undefined) throw new Error(`${url} weighs river ${weights.river_id[weight]}, not a routed river`)
+    const river = indexOfRiver.get(weights.riverId[weight])
+    if (river === undefined) throw new Error(`${url} weighs river ${weights.riverId[weight]}, not a routed river`)
     riverOfWeight[weight] = river
     catchmentAreas[river] += weights.area_sqm[weight]
     weightsOfRiver[river]++
@@ -208,21 +201,57 @@ function findRiver({ indexOfRiver }, riverId, url) {
 }
 
 /**
- * Everything routing reads about ``rivers``, a target and the rivers upstream of it in routing parameter order with the
- * target last: the position each drains into (-1 for the target), their Muskingum coefficients, the runoff cells, and
- * the weights.
+ * The network routing reads of ``rivers``, a target and the rivers upstream of it in network file order with the
+ * target last, prepareRivers's with each weight's cell its row of the runoff read, and of each cell read, its y and x
+ * index in the runoff grid, as cellY and cellX.
  */
-function prepareNetwork(parameters, weights, riverOfWeight, catchmentAreas, rivers, runoff) {
-  const target = rivers[rivers.length - 1]
+function prepareNetwork(matched, rivers, runoff) {
+  const network = prepareRivers(matched, rivers, runoff.stepSeconds, runoff.metersPerUnit)
+  const { y_index: weightY, x_index: weightX } = matched.weights
+  const { cellOfKey, cellY, cellX } = indexRunoffCells(weightY, weightX, network.weightCells, runoff)
+  const nX = runoff.array.shape[2]
+  const weightCells = network.weightCells.map(row => cellOfKey.get(weightY[row] * nX + weightX[row]))
+  return { network: { ...network, weightCells }, cellY, cellX }
+}
+
+/**
+ * The network kernel.js routes of ``rivers``, every river or a target and the rivers upstream of it,
+ * in network file order, at a step of ``stepSeconds``, as its prepareRouting gives it, with the weights of each river
+ * added: weightStarts; weightCells, still the rows of the grid weights each was read from; and weights, the volume
+ * (m³) a unit of runoff depth in the cell gives the river, its share of the river's catchment area times
+ * ``metersPerUnit``, in float32 as river-route keeps it.
+ */
+function prepareRivers({ parameters, weights, riverOfWeight, catchmentAreas }, rivers, stepSeconds, metersPerUnit) {
   const positionOfRiver = new Int32Array(parameters.riverIds.length).fill(-1)
   rivers.forEach((river, position) => { positionOfRiver[river] = position })
-  const downstreamPositions = rivers.map(river => {
-    return river === target ? -1 : positionOfRiver[parameters.downstreamIndices[river]]
+  const downstreamIndices = rivers.map(river => {
+    const downstream = parameters.downstreamIndices[river]
+    return downstream < 0 ? -1 : positionOfRiver[downstream] // -1 too where the river drains out of ``rivers``
   })
-  const coefficients = muskingumCoefficients(parameters, rivers, runoff.stepSeconds)
-  const cells = indexRunoffCells(weights, riverOfWeight, positionOfRiver, runoff)
-  const forcing = weighRiverCells(weights, riverOfWeight, positionOfRiver, catchmentAreas, coefficients, cells, runoff)
-  return { downstreamPositions, ...coefficients, cellY: cells.cellY, cellX: cells.cellX, ...forcing }
+  const k = Float64Array.from(rivers, river => parameters.k[river])
+  const x = Float64Array.from(rivers, river => parameters.x[river])
+  // a river that no sub-reaches or subcycles make valid is routed, and the console told of it
+  const options = { dtRunoff: stepSeconds, dtRouting: DT_ROUTING, invalidCoefficients: 'log' }
+  const network = kernelSetup.prepareRouting({ downstreamIndices, k, x }, options)
+  const nRivers = rivers.length
+  const weightStarts = new Int32Array(nRivers + 1)
+  for (let weight = 0; weight < riverOfWeight.length; weight++) {
+    const position = positionOfRiver[riverOfWeight[weight]]
+    if (position >= 0) weightStarts[position + 1]++
+  }
+  for (let position = 0; position < nRivers; position++) weightStarts[position + 1] += weightStarts[position]
+  const weightCells = new Int32Array(weightStarts[nRivers])
+  const volumes = new Float32Array(weightStarts[nRivers])
+  const nextWeight = weightStarts.slice(0, nRivers)
+  for (let weight = 0; weight < riverOfWeight.length; weight++) {
+    const river = riverOfWeight[weight]
+    const position = positionOfRiver[river]
+    if (position < 0) continue
+    const slot = nextWeight[position]++
+    weightCells[slot] = weight
+    volumes[slot] = catchmentAreas[river] * weights.proportion[weight] * metersPerUnit
+  }
+  return { ...network, weightStarts, weightCells, weights: volumes }
 }
 
 /** The rivers that drain into ``target``, and the target last, in routing parameter order. */
@@ -246,41 +275,15 @@ function selectUpstreamRivers(downstreamIndices, target) {
 }
 
 /**
- * Each river's Muskingum coefficients at the runoff step, computed in float64 as river-route computes them from its
- * int64 k and float64 x, and rounded to float32 as it stores them. c4 = (c1 + c2) / dt turns a catchment runoff
- * volume, which the uniform transform spreads evenly over the runoff step, into the river's forcing.
+ * The grid cells the weights of ``rows`` of the grid weights cover, by their position in the runoff grid, sorted by
+ * runoff chunk so that each chunk's cells fill consecutive rows of the runoff read.
  */
-function muskingumCoefficients({ riverIds, k, x }, rivers, stepSeconds) {
-  const [c1, c2, c3, c4] = Array.from({ length: 4 }, () => new Float64Array(rivers.length))
-  for (let position = 0; position < rivers.length; position++) {
-    const river = rivers[position]
-    if (!(k[river] > 0 && k[river] < Infinity && x[river] >= 0 && x[river] <= 0.5)) {
-      throw new Error(`river ${riverIds[river]} has k ${k[river]} and x ${x[river]}; need k > 0 and 0 <= x <= 0.5`)
-    }
-    const stepOverK = stepSeconds / k[river]
-    const denominator = stepOverK + 2 * (1 - x[river])
-    c1[position] = Math.fround((stepOverK - 2 * x[river]) / denominator)
-    c2[position] = Math.fround((stepOverK + 2 * x[river]) / denominator)
-    c3[position] = Math.fround((2 * (1 - x[river]) - stepOverK) / denominator)
-    c4[position] = Math.fround(Math.fround(c1[position] + c2[position]) / stepSeconds)
-    if (Math.abs(c1[position] + c2[position] + c3[position] - 1) > 1e-5) {
-      throw new Error(`river ${riverIds[river]} has Muskingum coefficients that do not sum to 1`)
-    }
-  }
-  return { c1, c2, c3, c4 }
-}
-
-/**
- * The grid cells the routed catchments cover, by their position in the runoff grid, sorted by runoff chunk so that each
- * chunk's cells fill consecutive rows of the runoff read.
- */
-function indexRunoffCells(weights, riverOfWeight, positionOfRiver, runoff) {
+function indexRunoffCells(weightY, weightX, rows, runoff) {
   const [, nY, nX] = runoff.array.shape
   const [, chunkHeight, chunkWidth] = runoff.array.chunks
   const cellOfKey = new Map()
-  for (let weight = 0; weight < riverOfWeight.length; weight++) {
-    if (positionOfRiver[riverOfWeight[weight]] < 0) continue
-    const [y, x] = [weights.y_index[weight], weights.x_index[weight]]
+  for (const row of rows) {
+    const [y, x] = [weightY[row], weightX[row]]
     if (!(y >= 0 && y < nY && x >= 0 && x < nX)) {
       throw new Error(`a weight's cell (y ${y}, x ${x}) is outside the ${nY} by ${nX} runoff grid of ${runoff.url}`)
     }
@@ -300,143 +303,55 @@ function indexRunoffCells(weights, riverOfWeight, positionOfRiver, runoff) {
 }
 
 /**
- * Each routed river's weights as sparse rows: the runoff cell of each weight, and the multiplier that turns the cell's
- * runoff depth into its share of the river's forcing, c4 times the catchment runoff volume it adds.
+ * Route the jobs of sub-watershed blocks prepare.js's assignBlocks packs for the pool's workers, all at once on the
+ * workers, then the main stem, the last job, in this thread from the series of the blocks' outlets. Returns the
+ * target's series, the outlet of the main stem.
  */
-function weighRiverCells(weights, riverOfWeight, positionOfRiver, catchmentAreas, { c4 }, { cellOfKey }, runoff) {
-  const nX = runoff.array.shape[2]
-  const weightStart = new Int32Array(c4.length + 1)
-  for (let weight = 0; weight < riverOfWeight.length; weight++) {
-    const position = positionOfRiver[riverOfWeight[weight]]
-    if (position >= 0) weightStart[position + 1]++
-  }
-  for (let position = 0; position < c4.length; position++) weightStart[position + 1] += weightStart[position]
-  const weightCell = new Int32Array(weightStart[c4.length])
-  const weightForcing = new Float64Array(weightStart[c4.length])
-  const nextWeight = weightStart.slice(0, c4.length)
-  for (let weight = 0; weight < riverOfWeight.length; weight++) {
-    const river = riverOfWeight[weight]
-    const position = positionOfRiver[river]
-    if (position < 0) continue
-    const slot = nextWeight[position]++
-    weightCell[slot] = cellOfKey.get(weights.y_index[weight] * nX + weights.x_index[weight])
-    weightForcing[slot] = c4[position] * catchmentAreas[river] * weights.proportion[weight] * runoff.metersPerUnit
-  }
-  return { weightStart, weightCell, weightForcing }
-}
-
-const CAP_DIVISORS = [1, 2, 3, 4, 6, 8, 12, 16] // the caps on a region tried are the rivers per worker over these
-
-/**
- * Route the network's regions on the pool's workers at once, then its main stem in this thread with each region's
- * outflow added into the stem river it drains into, all in ``order``. Returns the target's series, the stem's outlet.
- */
-async function routeRegionsInParallel(network, runoffByCell, nSteps, workerPool, order) {
-  const { riversOfWorker, stemRivers } = partitionRivers(network.downstreamPositions, workerPool.size)
-  const routedRegions = await Promise.all(riversOfWorker.map(async rivers => {
-    const part = extractRivers(network, runoffByCell, rivers, nSteps)
-    const transfer = [part.runoffByCell, ...Object.values(part.network)].map(array => array.buffer)
-    const task = { kind: 'route', order, network: part.network, runoffByCell: part.runoffByCell, nSteps }
-    return { outlets: part.outlets, outflows: await workerPool.run(task, transfer) }
+async function routeJobsInParallel(network, runoff, workerPool) {
+  const jobs = kernelSetup.assignBlocks(network, workerPool.size)
+  const mainStem = jobs.pop()
+  const outlets = jobs.map(blocks => blocks.stops.map(stop => stop - 1)) // each block's last river
+  const outletSeries = await Promise.all(jobs.map((blocks, job) => {
+    const part = extractJob(network, runoff, blocks)
+    const transfer = [part.runoff.depth, part.network.weightStarts, part.network.weightCells, part.network.weights]
+    const task = { kind: 'route', ...part, blocks, keep: outlets[job] }
+    return workerPool.run(task, transfer.map(array => array.buffer))
   }))
-  const stem = extractRivers(network, runoffByCell, stemRivers, nSteps, routedRegions)
-  return KERNELS[order](stem.network, stem.runoffByCell, nSteps)
+  const given = { rivers: new Int32Array(outlets.reduce((count, rivers) => count + rivers.length, 0)) }
+  given.series = new Float32Array(given.rivers.length * runoff.nSteps)
+  outlets.reduce((first, rivers, job) => {
+    given.rivers.set(rivers, first)
+    given.series.set(outletSeries[job], first * runoff.nSteps)
+    return first + rivers.length
+  }, 0)
+  return routeRivers(network, runoff, { keep: network.outlets, blocks: mainStem, given })
 }
 
 /**
- * Split the rivers into regions for ``nWorkers`` workers and a main stem routed after them. A region is a subtree of
- * at most cap rivers draining into a river with more, and the stem is the target and every river with more than cap
- * upstream. Regions are packed onto the workers largest first, each onto the least loaded, and of the caps tried, the
- * one kept finishes soonest: the most loaded worker's rivers plus the stem's.
+ * What a worker routes the rivers of ``blocks`` from: the network with the weights of only those rivers, which read
+ * the cells numbered in the order first read, and runoff of only those cells.
  */
-function partitionRivers(downstreamPositions, nWorkers) {
-  const nRivers = downstreamPositions.length
-  const upstreamCounts = new Int32Array(nRivers).fill(1)
+function extractJob(network, { depth, nSteps }, { starts, stops }) {
+  const nRivers = network.weightStarts.length - 1
+  const inBlocks = new Uint8Array(nRivers)
+  starts.forEach((start, block) => inBlocks.fill(1, start, stops[block]))
+  const weightStarts = new Int32Array(nRivers + 1)
+  const [weightCells, weights] = [[], []]
+  const localCell = new Map() // each cell read, by its row of the runoff read, and its row of the job's runoff
   for (let river = 0; river < nRivers; river++) {
-    if (downstreamPositions[river] >= 0) upstreamCounts[downstreamPositions[river]] += upstreamCounts[river]
-  }
-  const partitions = CAP_DIVISORS.map(divisor => {
-    return partitionAtCap(downstreamPositions, upstreamCounts, Math.ceil(nRivers / (nWorkers * divisor)), nWorkers)
-  })
-  const best = partitions.reduce((best, partition) => (partition.cost < best.cost ? partition : best))
-  const riversOfWorker = Array.from({ length: nWorkers }, () => [])
-  const stemRivers = []
-  for (let river = 0; river < nRivers; river++) {
-    const region = best.regionOfRiver[river]
-    if (region < 0) stemRivers.push(river)
-    else riversOfWorker[best.workerOfRegion[region]].push(river)
-  }
-  return {
-    riversOfWorker: riversOfWorker.filter(rivers => rivers.length > 0).map(rivers => Int32Array.from(rivers)),
-    stemRivers: Int32Array.from(stemRivers),
-  }
-}
-
-function partitionAtCap(downstreamPositions, upstreamCounts, cap, nWorkers) {
-  const regionOfRiver = new Int32Array(downstreamPositions.length).fill(-1)
-  const regionSizes = []
-  let nStemRivers = 0
-  for (let river = downstreamPositions.length - 1; river >= 0; river--) {
-    const downstream = downstreamPositions[river]
-    if (downstream < 0 || upstreamCounts[river] > cap) nStemRivers++
-    else if (downstream >= 0 && regionOfRiver[downstream] >= 0) regionOfRiver[river] = regionOfRiver[downstream]
-    else regionOfRiver[river] = regionSizes.push(upstreamCounts[river]) - 1
-  }
-  const workerOfRegion = new Int32Array(regionSizes.length)
-  const loads = new Float64Array(nWorkers)
-  const largestFirst = regionSizes.map((_, region) => region).sort((a, b) => regionSizes[b] - regionSizes[a])
-  for (const region of largestFirst) {
-    workerOfRegion[region] = loads.indexOf(Math.min(...loads))
-    loads[workerOfRegion[region]] += regionSizes[region]
-  }
-  return { regionOfRiver, workerOfRegion, cost: Math.max(...loads) + nStemRivers }
-}
-
-/**
- * The part of the network made of ``rivers``, positions in routing order, with its own rows of runoff. A river that
- * drains out of the part is one of its outlets. The outflows of the outlets of ``routedRegions`` are injected into the
- * rivers of the part they drain into.
- */
-function extractRivers(network, runoffByCell, rivers, nSteps, routedRegions = []) {
-  const localPosition = new Int32Array(network.downstreamPositions.length).fill(-1)
-  rivers.forEach((river, local) => { localPosition[river] = local })
-  const downstreamPositions = rivers.map(river => {
-    return network.downstreamPositions[river] >= 0 ? localPosition[network.downstreamPositions[river]] : -1
-  })
-  const outlets = rivers.filter((_, local) => downstreamPositions[local] < 0)
-  const [c1, c2, c3] = [network.c1, network.c2, network.c3].map(c => Float64Array.from(rivers, river => c[river]))
-  const { weights, cells } = extractWeights(network, rivers)
-  const partRunoff = new Float32Array(cells.length * nSteps)
-  cells.forEach((cell, local) => {
-    partRunoff.set(runoffByCell.subarray(cell * nSteps, (cell + 1) * nSteps), local * nSteps)
-  })
-  const injections = routedRegions.flatMap(({ outlets, outflows }) => Array.from(outlets, (outlet, index) => ({
-    river: localPosition[network.downstreamPositions[outlet]],
-    series: outflows.subarray(index * nSteps, (index + 1) * nSteps),
-  }))).sort((a, b) => a.river - b.river)
-  const injected = injections.length === 0 ? {} : {
-    injectedRivers: Int32Array.from(injections, injection => injection.river),
-    injectedSeries: injections.map(injection => injection.series),
-  }
-  return { network: { downstreamPositions, c1, c2, c3, ...weights, ...injected }, runoffByCell: partRunoff, outlets }
-}
-
-/** The weights of ``rivers`` as their own sparse rows, and the cells they read, numbered in the order first read. */
-function extractWeights({ weightStart, weightCell, weightForcing }, rivers) {
-  const partStart = new Int32Array(rivers.length + 1)
-  rivers.forEach((river, local) => {
-    partStart[local + 1] = partStart[local] + weightStart[river + 1] - weightStart[river]
-  })
-  const partCell = new Int32Array(partStart[rivers.length])
-  const partForcing = new Float64Array(partStart[rivers.length])
-  const localCell = new Map()
-  rivers.forEach((river, local) => {
-    for (let weight = weightStart[river]; weight < weightStart[river + 1]; weight++) {
-      if (!localCell.has(weightCell[weight])) localCell.set(weightCell[weight], localCell.size)
-      partCell[partStart[local] + weight - weightStart[river]] = localCell.get(weightCell[weight])
-      partForcing[partStart[local] + weight - weightStart[river]] = weightForcing[weight]
+    const [first, stop] = inBlocks[river] ? [network.weightStarts[river], network.weightStarts[river + 1]] : [0, 0]
+    for (let weight = first; weight < stop; weight++) {
+      const cell = network.weightCells[weight]
+      if (!localCell.has(cell)) localCell.set(cell, localCell.size)
+      weightCells.push(localCell.get(cell))
+      weights.push(network.weights[weight])
     }
-  })
-  const weights = { weightStart: partStart, weightCell: partCell, weightForcing: partForcing }
-  return { weights, cells: [...localCell.keys()] }
+    weightStarts[river + 1] = weightCells.length
+  }
+  const jobDepth = new Float32Array(localCell.size * nSteps)
+  for (const [cell, local] of localCell) {
+    jobDepth.set(depth.subarray(cell * nSteps, (cell + 1) * nSteps), local * nSteps)
+  }
+  const jobWeights = { weightStarts, weightCells: Int32Array.from(weightCells), weights: Float32Array.from(weights) }
+  return { network: { ...network, ...jobWeights }, runoff: { depth: jobDepth, nSteps } }
 }

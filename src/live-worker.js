@@ -7,8 +7,15 @@
  * page. Each frame carries the time spent making it since the last: taking up the queue, routing, and classing, and the
  * history of each river the page gauges.
  */
-import { createLiveEngine } from './live-engine.js'
-import { prepareRegion } from './routing.js'
+const queue = [] // the page's messages, waiting for the next tick
+self.onmessage = ({ data }) => {
+  queue.push(data)
+}
+// imported only once the worker takes in the page's messages: the kernel's module reads and compiles its WebAssembly as
+// it is imported, and a browser hands a module worker the messages that come meanwhile whether it listens or not
+const [{ createLiveEngine }, { prepareRegion }] = await Promise.all([
+  import('./live-engine.js'), import('./routing.js'),
+])
 
 const STEP_SECONDS = 3600 // an hour, each step routed
 const TICK_MILLISECONDS = 16 // how often the loop takes up the queue and the clock
@@ -24,7 +31,6 @@ let frameDue = false // whether the page lacks the latest state
 let stepsDue = 0 // the steps the clock has asked for and the loop has not yet routed
 let lastTick = performance.now()
 let regionLoads = Promise.resolve() // regions load one after another
-const queue = [] // the page's messages, waiting for the next tick
 let cycle = { queueMs: 0, routeMs: 0, hours: 0 } // the work since the last frame
 
 const TASKS = {
@@ -66,10 +72,6 @@ const TASKS = {
     frame = classes
     frameAway = false
   },
-}
-
-self.onmessage = ({ data }) => {
-  queue.push(data)
 }
 
 /** Take up one of the page's messages. */

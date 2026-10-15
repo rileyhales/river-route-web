@@ -1,10 +1,11 @@
 /**
  * The live page: a brush gives runoff to grid cells, as pulses while it is held or as sources until they are erased,
- * and every river of the regions it passes over routes it live, in a worker that never stops, while the map draws their
- * discharge a frame at a time. The regions load as the brush passes over their rivers. A river clicked with the gauge
- * tool is gauged, and loads its region: the chart draws its discharge over the last steps the worker keeps, until it is
- * clicked again or removed. The data sources come from the page's address when it names them, and otherwise from the
- * dialog.
+ * and every river of the regions it passes over routes it live, in a worker that routes until it is stopped, while the
+ * map draws their discharge a frame at a time. The regions load as the brush passes over their rivers. A river clicked
+ * with the gauge tool is gauged, and loads its region: the chart draws its discharge over the last steps the worker
+ * keeps, until it is clicked again or removed. Stopping ends the worker and forgets all it routed; play, the brush, or
+ * a gauge starts another from nothing. The data sources come from the page's address when it names them, and
+ * otherwise from the dialog.
  */
 import './styles/tokens.css'
 import './styles/base.css'
@@ -37,9 +38,10 @@ const sources = new Map() // each source cell's key and runoff depth an hour, in
 const requestedRegions = new Set() // the regions asked of the worker, loaded or loading
 const gauges = new Map() // each gauged river's id and its color, in the order gauged
 const updates = [] // the timings of each map update of the last TIMING_SECONDS, when each reached the screen
-const worker = new Worker(new URL('./live-worker.js', import.meta.url), { type: 'module' })
 const gaugeChart = createGaugeChart($('gauge-chart'), $('gauge-list'), removeGauge)
+let grid // the runoff grid the brush paints
 let liveMap
+let worker // the live worker routing, or undefined while the routing is stopped
 
 function readSources() {
   return Object.fromEntries(new FormData(sourcesForm))
@@ -66,7 +68,7 @@ function stroke({ tool, cellKeys, underBrush, regions }) {
   }
   if (tool === 'pulse') {
     const [nowUnderBrush, passedOver] = [Int32Array.from(underBrush), Int32Array.from(cellKeys)]
-    worker.postMessage({ kind: 'pulse', underBrush: nowUnderBrush, passedOver, depthMillimeters: depth })
+    giveWork({ kind: 'pulse', underBrush: nowUnderBrush, passedOver, depthMillimeters: depth })
   } else {
     for (const cellKey of cellKeys) {
       if (depth > 0) sources.set(cellKey, depth)
@@ -74,7 +76,7 @@ function stroke({ tool, cellKeys, underBrush, regions }) {
     }
     liveMap.showPainted(sources)
     $('source-cells').textContent = COUNT.format(sources.size)
-    worker.postMessage({ kind: 'runoff', cellKeys: Int32Array.from(cellKeys), depthMillimeters: depth })
+    giveWork({ kind: 'runoff', cellKeys: Int32Array.from(cellKeys), depthMillimeters: depth })
   }
   requestRegions(regions)
 }
@@ -84,7 +86,7 @@ function requestRegions(regions) {
   const { routingParameters, gridWeights } = readSources()
   for (const region of regions.filter(id => !requestedRegions.has(id))) {
     requestedRegions.add(region)
-    worker.postMessage({
+    giveWork({
       kind: 'region',
       id: region,
       routingParametersUrl: absoluteUrl(routingParameters.replaceAll('{region}', region)),
@@ -118,7 +120,7 @@ function removeGauge(riverId) {
 /** Hand the gauges to the worker, the map, and the chart, and show the chart while there are any. */
 function showGauges() {
   const gauged = Array.from(gauges, ([riverId, color]) => ({ riverId, color }))
-  worker.postMessage({ kind: 'gauges', riverIds: Int32Array.from(gauges.keys()) })
+  worker?.postMessage({ kind: 'gauges', riverIds: Int32Array.from(gauges.keys()) })
   liveMap?.setGauges(gauged)
   gaugeChart.setGauges(gauged)
   $('gauged').hidden = gauges.size === 0
@@ -132,7 +134,59 @@ function drawGauges({ riverIds, history }) {
   })))
 }
 
-worker.onmessage = ({ data }) => {
+/** Hand the live worker work, first starting one that routes from nothing when the routing is stopped. */
+function giveWork(message) {
+  if (worker === undefined) startRouting()
+  worker.postMessage(message)
+}
+
+/** Start a live worker routing from nothing, playing, with the gauges and the speed of the page. */
+function startRouting() {
+  if (grid === undefined) throw new Error('the routing starts once the runoff grid has loaded')
+  if (worker !== undefined) throw new Error('the routing has started already')
+  const started = new Worker(new URL('./live-worker.js', import.meta.url), { type: 'module' })
+  // a stopped worker's last answers may still arrive, and are dropped
+  started.onmessage = ({ data }) => {
+    if (started === worker) takeAnswer(data)
+  }
+  started.onerror = event => {
+    if (started === worker) showError(`the live worker failed: ${event.message || 'it did not load'}`)
+  }
+  worker = started
+  worker.postMessage({ kind: 'start', nX: grid.nX, classes: DISCHARGE_CLASSES })
+  worker.postMessage({ kind: 'rate', rate: $('rate').valueAsNumber * HOURS_A_SECOND_AT_1X })
+  if (gauges.size > 0) worker.postMessage({ kind: 'gauges', riverIds: Int32Array.from(gauges.keys()) })
+  showPlaying(true)
+  $('btn-stop').disabled = false
+}
+
+/** End the live worker, and forget everything it routed: the sources, the regions, and the gauges. */
+function stopRouting() {
+  worker?.terminate()
+  worker = undefined
+  sources.clear()
+  requestedRegions.clear()
+  gauges.clear()
+  updates.length = 0
+  liveMap?.showPainted(sources)
+  liveMap?.clearNetwork()
+  showGauges()
+  $('hours-routed').textContent = '0'
+  $('source-cells').textContent = '0'
+  $('regions-loaded').textContent = '—'
+  $('rivers-routed').textContent = '0'
+  showPlaying(false)
+  $('btn-stop').disabled = true
+  showError(undefined)
+}
+
+function showPlaying(playing) {
+  $('btn-play').textContent = playing ? '❚❚' : '▶'
+  $('btn-play').setAttribute('aria-label', playing ? 'Pause' : 'Play')
+}
+
+/** Take up an answer of the live worker: a network, a frame, or an error. */
+function takeAnswer(data) {
   if (data.kind === 'network') {
     liveMap.setNetwork(data.riverIds, data.regions.map(region => region.id))
     $('regions-loaded').textContent = data.regions.map(region => region.id).join(', ')
@@ -159,10 +213,9 @@ worker.onmessage = ({ data }) => {
     showError(data.message)
   }
 }
-worker.onerror = event => showError(`the live worker failed: ${event.message || 'it did not load'}`)
 
 try {
-  const grid = createGrid(await readGridCoordinates(absoluteUrl(readSources().grid)))
+  grid = createGrid(await readGridCoordinates(absoluteUrl(readSources().grid)))
   liveMap = await createLiveMap('map', absoluteUrl(streamsUrl(readSources())), grid, {
     onStroke: stroke,
     onGaugeClicked(properties) {
@@ -174,8 +227,7 @@ try {
     },
     onError: error => showError(error.message),
   })
-  worker.postMessage({ kind: 'start', nX: grid.nX, classes: DISCHARGE_CLASSES })
-  worker.postMessage({ kind: 'rate', rate: $('rate').valueAsNumber * HOURS_A_SECOND_AT_1X })
+  startRouting()
 } catch (error) {
   showError(error.message)
 }
@@ -228,14 +280,23 @@ $('brush-radius').addEventListener('input', () => {
 $('rate').addEventListener('input', () => {
   const speed = $('rate').valueAsNumber
   $('rate-value').textContent = `${speed}× = ${speed * HOURS_A_SECOND_AT_1X}h/s`
-  worker.postMessage({ kind: 'rate', rate: speed * HOURS_A_SECOND_AT_1X })
+  worker?.postMessage({ kind: 'rate', rate: speed * HOURS_A_SECOND_AT_1X })
 })
+// play starts the routing again once it is stopped, and otherwise plays or pauses it
 $('btn-play').addEventListener('click', () => {
-  const playing = $('btn-play').getAttribute('aria-label') === 'Pause'
-  worker.postMessage({ kind: playing ? 'pause' : 'play' })
-  $('btn-play').textContent = playing ? '▶' : '❚❚'
-  $('btn-play').setAttribute('aria-label', playing ? 'Play' : 'Pause')
+  try {
+    if (worker === undefined) {
+      startRouting()
+      return
+    }
+    const playing = $('btn-play').getAttribute('aria-label') === 'Pause'
+    worker.postMessage({ kind: playing ? 'pause' : 'play' })
+    showPlaying(!playing)
+  } catch (error) {
+    showError(error.message)
+  }
 })
+$('btn-stop').addEventListener('click', stopRouting)
 
 // the header's reset erases every source, stops every pulse, empties every river, and forgets each gauge's history,
 // and keeps the regions loaded and the gauges
@@ -243,8 +304,8 @@ $('btn-reset').addEventListener('click', () => {
   sources.clear()
   liveMap?.showPainted(sources)
   $('source-cells').textContent = '0'
-  worker.postMessage({ kind: 'clear' })
-  worker.postMessage({ kind: 'drain' })
+  worker?.postMessage({ kind: 'clear' })
+  worker?.postMessage({ kind: 'drain' })
   showError(undefined)
 })
 

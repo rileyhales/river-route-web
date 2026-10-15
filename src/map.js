@@ -23,12 +23,12 @@ const SOURCE = 'streams' // the streams' source, whose one layer of lines is als
 const LAYERS = ['streams', 'study-area', 'outlet'] // bottom to top
 const CLICK_PIXELS = 10 // how far around a click to look for a stream, since a line a few pixels wide is hard to hit
 /**
- * The classes discharge is drawn in: perTenfold to each tenfold from lowest, 0.1 m³/s, up to top, at 10^5 m³/s, the
+ * The classes discharge is drawn in: perTenfold to each tenfold from lowest, 1 m³/s, up to top, at 10^5 m³/s, the
  * lowest class holding every discharge below it and the top every discharge above it. Finer classes would differ by
  * colors too close for anyone to tell apart, and every class a river crosses costs the map an update: at 5 a tenfold,
  * about 4% of rivers change class an hour, against 7% at 8.
  */
-export const DISCHARGE_CLASSES = { lowest: 0.1, perTenfold: 5, top: 30 }
+export const DISCHARGE_CLASSES = { lowest: 1, perTenfold: 5, top: 25 }
 // A river moves from the class drawn to another only once its discharge is this share of a class past the edge of the
 // one drawn, so that a river whose discharge wavers about an edge is not drawn in one class, then the other.
 const CLASS_MARGIN = 0.25
@@ -36,7 +36,7 @@ const CLASS_MARGIN = 0.25
 // the network's blue
 const DISCHARGE_COLORS = ['#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#6ece58', '#fde725']
 /** A river's discharge class, which drawDischargeOn sets in feature state, or -1 before it sets one. */
-export const DISCHARGE_CLASS = ['coalesce', ['feature-state', 'dischargeClass'], -1]
+const DISCHARGE_CLASS = ['coalesce', ['feature-state', 'dischargeClass'], -1]
 const STREAM_ORDER = ['coalesce', ['get', 'strahlerOrder'], 1]
 const NO_RIVER = ['in', ['get', 'riverId'], ['literal', []]] // a filter no river passes
 const NETWORK_OPACITY = 0.85 // the network's, dimmed to DIMMED_NETWORK_OPACITY while discharge is drawn over it
@@ -45,12 +45,29 @@ const DIMMED_NETWORK_OPACITY = 0.35
 /** The linear-gradient of the discharge classes' colors, for the legend. */
 export const dischargeGradient = () => `linear-gradient(90deg, ${DISCHARGE_COLORS.join(', ')})`
 
+/** The color ``hex``, as #rrggbb, at ``opacity``, from 0 to 1. */
+function withOpacity(hex, opacity) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex) || !(opacity >= 0 && opacity <= 1)) {
+    throw new Error(`a color is #rrggbb at an opacity from 0 to 1, not ${hex} at ${opacity}`)
+  }
+  const [red, green, blue] = [1, 3, 5].map(start => Number.parseInt(hex.slice(start, start + 2), 16))
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`
+}
+
 const byZoom = stops => ['interpolate', ['linear'], ['zoom'], ...stops]
 const byOrder = (smallest, largest) => ['interpolate', ['linear'], STREAM_ORDER, 1, smallest, 12, largest]
-/** A river's color by its discharge class, from the lowest class's to the top's. */
-export const CLASS_COLOR = ['interpolate', ['linear'], DISCHARGE_CLASS, ...DISCHARGE_COLORS.flatMap((color, index) => {
-  return [(index * DISCHARGE_CLASSES.top) / (DISCHARGE_COLORS.length - 1), color]
-})]
+// the lowest class's color half transparent, for the rivers of the lowest class or none, which hold so little they read
+// as dry
+const DRY_COLOR = withOpacity(DISCHARGE_COLORS[0], 0.5)
+/**
+ * A river's color by its discharge class, from the lowest class's to the top's: DRY_COLOR in the lowest class, and
+ * before it is given a class.
+ */
+export const CLASS_COLOR = ['case', ['<=', DISCHARGE_CLASS, 0], DRY_COLOR, [
+  'interpolate', ['linear'], DISCHARGE_CLASS, ...DISCHARGE_COLORS.flatMap((color, index) => {
+    return [(index * DISCHARGE_CLASSES.top) / (DISCHARGE_COLORS.length - 1), color]
+  }),
+]]
 /** A river's width by its stream order, from the smallest, order 1, to order 12, larger than any, and by zoom. */
 export const STREAM_ORDER_WIDTH = byZoom([3, byOrder(1, 4.5), 9, byOrder(1.8, 9), 14, byOrder(3.5, 14)])
 

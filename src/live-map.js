@@ -5,7 +5,7 @@
  * lines are drawn, when asked for, once a cell is GRID_CELL_PIXELS wide.
  */
 import {
-  addStreamsSource, CLASS_COLOR, createBaseMap, DISCHARGE_CLASS, drawDischargeOn, nearestStream, queryStreams,
+  addStreamsSource, CLASS_COLOR, createBaseMap, drawDischargeOn, nearestStream, queryStreams,
   readColors, STREAM_ORDER_WIDTH, streamLine,
 } from './map.js'
 
@@ -158,6 +158,11 @@ export async function createLiveMap(container, streamsUrl, grid, { onStroke, onG
       const positionOf = new Map(Array.from(riverIds, (riverId, position) => [riverId, position]))
       discharge.start(riverIds, feature => positionOf.get(feature.id), 0)
     },
+    /** Color no river by its discharge, as before any region loaded. */
+    clearNetwork() {
+      map.setFilter('live-discharge', NO_REGION)
+      discharge.stop()
+    },
     /** Draw each river's discharge class, in the order setNetwork was given their ids: how many rivers it redrew. */
     drawDischarge(classValues) {
       return discharge.draw(classValues)
@@ -171,7 +176,7 @@ export async function createLiveMap(container, streamsUrl, grid, { onStroke, onG
 
 /**
  * The grid's lines, the source cells, colored by their depth, and the discharge of the rivers of the regions loaded,
- * drawn only where a river holds more than the lowest class of discharge: over the network, under the discharge. Over
+ * every river drawn, those of the lowest class half transparent, as dry: over the network, under the discharge. Over
  * everything, the gauged rivers' outlines, drawn either side of a gap as wide as the river, so that its discharge shows
  * through.
  */
@@ -188,7 +193,7 @@ function addLiveLayers(map) {
     paint: { 'fill-color': '#38bdf8', 'fill-opacity': byDepth, 'fill-outline-color': 'rgba(56, 189, 248, 0.8)' },
   })
   map.addLayer(streamLine('live-discharge', {
-    'line-color': ['case', ['<=', DISCHARGE_CLASS, 0], 'rgba(0, 0, 0, 0)', CLASS_COLOR],
+    'line-color': CLASS_COLOR,
     'line-width': STREAM_ORDER_WIDTH,
     'line-opacity': 0.95,
   }, NO_REGION))
@@ -254,7 +259,7 @@ function panWithMiddleButton(map) {
 function paintWithBrush(map, grid, onStroke) {
   const cursor = Object.assign(document.createElement('div'), { className: 'brush-cursor', hidden: true })
   map.getContainer().append(cursor)
-  let [tool, radius] = ['pan', 40]
+  let [tool, radius] = ['pan', 25]
   let heldAt // where the pointer is, while its button is held down with a tool that paints
   let stroke = { cellKeys: new Set(), regions: new Set() } // passed over since the last frame
   const canPaint = () => PAINTING_TOOLS.has(tool)

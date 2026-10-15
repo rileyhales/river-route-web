@@ -48,24 +48,25 @@
           <button class="btn" type="button" data-tool="erase" aria-pressed="false">Erase</button>
         </div>
         <div class="field">
-          <label for="brush-radius">Radius <em id="brush-radius-value">40 px</em></label>
-          <input id="brush-radius" type="range" min="10" max="100" step="5" value="40"/>
+          <label for="brush-radius">Radius <em id="brush-radius-value">25 px</em></label>
+          <input id="brush-radius" type="range" min="10" max="100" step="5" value="25"/>
         </div>
         <div class="field">
           <label for="brush-depth">Intensity <em id="brush-depth-value">30 mm/hr ≈ 1.18 in/hr</em></label>
           <input id="brush-depth" type="range" min="5" max="250" step="5" value="30"/>
         </div>
-        <label class="row check"><input id="show-grid" type="checkbox"/>Runoff grid</label>
+        <label class="row check"><input id="show-grid" type="checkbox"/>Show Runoff Mapping Grid Cells</label>
       </section>
       <hr/>
       <section id="simulation">
         <h2>Simulation</h2>
         <div class="row actions">
-          <button id="btn-play" class="btn primary round" type="button" title="Play / pause" aria-label="Pause">❚❚</button>
+          <button id="btn-play" class="btn primary round" type="button" title="Play / pause" aria-label="Play">▶</button>
+          <button id="btn-stop" class="btn round" type="button" title="Stop" aria-label="Stop" disabled>■</button>
         </div>
         <div class="field">
           <label for="rate">Speed <em id="rate-value">1× = 24h/s</em></label>
-          <input id="rate" type="range" min="0" max="3" step="0.5" value="1"/>
+          <input id="rate" type="range" min="0" max="10" step="0.5" value="1"/>
         </div>
         <table class="table">
           <tbody>
@@ -79,9 +80,9 @@
       </section>
       <hr/>
       <section id="gauges">
-        <h2>Gauges</h2>
+        <h2>Monitoring Points</h2>
         <div class="row actions">
-          <button class="btn" type="button" data-tool="gauge" aria-pressed="false">Gauge</button>
+          <button class="btn" type="button" data-tool="gauge" aria-pressed="false">Monitoring points</button>
         </div>
         <div id="gauged" hidden>
           <figure id="gauge-chart"></figure>
@@ -119,7 +120,7 @@
   <div id="discharge-legend">
     <h2>Discharge m³/s</h2>
     <div id="legend-ramp"></div>
-    <div class="row between ticks"><span>≤0.1</span><span>10</span><span>10³</span><span>≥10⁵</span></div>
+    <div class="row between ticks"><span>≤1</span><span>10</span><span>10²</span><span>10³</span><span>10⁴</span><span>≥10⁵</span></div>
   </div>
 </div>
 
@@ -131,7 +132,7 @@
     </div>
     <form id="sources-form" class="modal-body">
       <div class="field">
-        <label for="source-routing">Routing parameters</label>
+        <label for="source-routing">Network file</label>
         <input id="source-routing" name="routingParameters" required spellcheck="false" value="%VITE_ROUTING_PARAMETERS%"/>
       </div>
       <div class="field">

@@ -42,7 +42,7 @@
     color: var(--text-dim);
 }
 
-/* the play button, the only round one, and the only one that answers a hover with movement */
+/* the play and stop buttons, the only round ones, and the only ones that answer a hover with movement */
 .btn.round {
     --size: 42px;
     font-size: 17px;
